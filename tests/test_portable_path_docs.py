@@ -82,3 +82,18 @@ def test_wiki_status_manifest_example_keys_are_portable() -> None:
     sources = json.loads(manifest_blocks[0])["sources"]
     for key in sources:
         assert not key.startswith("/"), f"manifest example key is absolute: {key}"
+
+
+def test_cli_docs_document_the_new_surface() -> None:
+    """AGENTS.md requires docs/ to track new CLI surface (repo rule PR-005)."""
+    cli = (REPO_ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
+    assert "--key" in cli, "docs/cli.md does not document cache-update --key"
+    assert "manifest.py" in cli and "migrate" in cli, (
+        "docs/cli.md does not document scripts/manifest.py migrate"
+    )
+
+
+def test_architecture_docs_state_the_key_contract() -> None:
+    arch = (REPO_ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+    for marker in ("vault-relative", "~", "migrate"):
+        assert marker in arch, f"docs/architecture.md is missing the {marker!r} rule"

@@ -185,7 +185,7 @@ Available for automation, scripting, and debugging. Skills call some of these in
 | `graph-analyse <vault> --path A B` / `--around PAGE --depth N [--direction in\|out\|both]` | Query modes: shortest link path between two pages; N-hop neighbourhood of a page (`--direction in` = blast radius) |
 | `batch-plan <vault> <source_dir>` | Split a source directory into parallel-ingest batches, skipping unchanged files |
 | `cache-check <vault> <sources...>` | Which sources are new / modified / unchanged vs. `.manifest.json` |
-| `cache-update <vault> <source>` | Record a source's SHA-256 in `.manifest.json` after ingest |
+| `cache-update <vault> <source> [--key <pseudo-key>] [--pages <page>...]` | Record a source's SHA-256 in `.manifest.json` after ingest. The stored key is normalised to a portable form; `--key` sets it explicitly (`repo:`/`url:`/`agent:`) for sources outside the vault and `$HOME` |
 | `cache-hash <path>` | Compute a file or directory hash (no manifest I/O) |
 | `ast-extract <path>` | Extract classes, functions, and imports from code — no LLM, no API calls |
 | `code-understand --project <dir> [--backend auto\|builtin\|codegraph] [--since <sha>] [--changed <file>...] [--max-symbols N] [--pretty]` | Emit a ranked code-understanding focus map (symbols + file:line citations) for a project; CodeGraph when available, built-in AST + rg otherwise. `--backend` beats the resolved `CODE_UNDERSTANDING_*` config (env → project `.env` → global config). Used by wiki-update Step 3b. |
@@ -202,6 +202,7 @@ obsidian-wiki graph-analyse /path/to/vault --around attention --depth 2 --direct
 obsidian-wiki batch-plan /path/to/vault ~/research --max-mb 4 --max-files 30
 obsidian-wiki cache-check /path/to/vault ~/research/*.pdf
 obsidian-wiki cache-update /path/to/vault ~/research/paper.pdf --pages concepts/attention.md
+obsidian-wiki cache-update /path/to/vault /srv/data/report.pdf --key repo:github.com/acme/reports
 obsidian-wiki ast-extract ./src --pretty
 obsidian-wiki code-understand --project . --since <last_commit_synced> --pretty
 ```
@@ -215,6 +216,27 @@ Most commands accept `--json` and/or `--pretty` for machine-readable output.
 `cache-update` therefore takes an advisory lock (`.manifest.lock` in the vault root, `O_CREAT|O_EXCL`, stdlib only so it works on Windows) and writes the manifest atomically via a temp file plus `os.replace`. A reader never sees a partial file, and a crashed writer's lock is stolen after 60 seconds.
 
 In parallel runs, always update the manifest through `obsidian-wiki cache-update` rather than hand-editing `.manifest.json` — hand edits bypass the lock.
+
+### Source keys and legacy migration
+
+Manifest `sources` keys — and the `sources:` frontmatter on pages — are **portable**. A vault is synced across machines, so a stored key is one of:
+
+| Source location | Key form | Example |
+|---|---|---|
+| Inside the vault | vault-relative | `Raw/papers/attention.pdf` |
+| Under `$HOME` | `~`-relative | `~/.claude/projects/.../abc123.jsonl` |
+| Git project, web page, agent session | pseudo-key | `repo:github.com/o/n`, `url:https://…`, `agent:claude/<id>` |
+
+`cache-update` normalises the key automatically. Pass `--key` for a source with no portable path form — the explicit key is authoritative, and re-keys an entry the manifest previously tracked by path. If a source is outside the vault and `$HOME` and no `--key` is given, the absolute path is stored for backward compatibility but a `no portable key` warning goes to stderr.
+
+To convert a manifest that already holds legacy absolute keys:
+
+```bash
+python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" migrate /path/to/vault --dry-run
+python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" migrate /path/to/vault
+```
+
+`migrate` rewrites in-vault keys to vault-relative and `$HOME` keys to `~`-relative, merges collisions, and leaves pseudo-keys and unclassifiable paths untouched (warning on the latter). `normalize` is kept as an alias for older instructions. `python3 scripts/manifest.py delta <vault> --scan '<glob>'` lists new/modified sources, honouring `WIKI_SKIP_PROJECTS`.
 
 ### Graph cache
 
