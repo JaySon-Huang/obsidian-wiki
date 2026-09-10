@@ -152,7 +152,25 @@ The manifest enables:
 - **Audit** — which source produced which wiki page
 - **Staleness detection** — source changed but wiki page hasn't been updated
 
-**Canonical source keys.** Source keys MUST be stored in a single canonical form: **absolute paths with `~` and env vars expanded** (e.g. `/Users/me/.claude/projects/.../abc.jsonl`, never `~/.claude/...`). The manifest is keyed by the raw string, so a mix of `~`-relative and absolute keys lets the *same file* be tracked twice — and the delta check then re-ingests an already-processed file because the lookup misses the other-form key. Always expand before you compare against the manifest and before you write a new entry. To repair an existing vault that already has both forms, run `scripts/manifest.py normalize <vault>` (merges colliding entries, keeps the newest `ingested_at`).
+**Source key contract (v2).** Source keys — the `sources` keys in `.manifest.json`, the `sources:` frontmatter values on pages, and project `source_cwd` — MUST be machine-portable. A vault is synced across machines, so a bare absolute path (`/Users/...`, `/home/...`) is never a valid stored key. This is the single canonical definition; other skills reference it rather than restating it.
+
+| Where the source lives | Canonical key form | Example |
+|---|---|---|
+| Inside the vault | **vault-relative path** — POSIX separators, no leading `./`, no `..` | `Raw/database/postgres.pdf`, `Clippings/article.md` |
+| Under `$HOME` | **home-relative path** — starts with `~` | `~/.claude/projects/-Users-name-my-app/abc.jsonl` |
+| A git project (any path) | **pseudo-key** `repo:<remote-url>` | `repo:github.com/Ar9av/obsidian-wiki` |
+| A web page | **pseudo-key** `url:<canonical-url>` | `url:https://example.com/article` |
+| An agent session | **pseudo-key** `agent:<agent>/<id>` | `agent:claude/<session-id>` |
+| Other out-of-vault file with no stable identity | **pseudo-key** `src:<sha256-8>` plus optional `source_hint` | `src:1f2a9c3d` + `source_hint: ~/docs/x.md` |
+
+Rules:
+
+1. **Never store a bare absolute path.** Convert before writing, not after.
+2. **Normalize before comparing.** Expand `~` and environment variables, resolve vault-relative keys against the vault root, and treat `scheme:`/`://` pseudo-keys as opaque identifiers. Never compare raw strings without normalizing first.
+3. **`source_hint` is advisory only.** It may carry a `~`-relative location for reopening a file on this machine. It is never an identity key and must not be required for correctness.
+4. **Identity survives path changes.** The same logical source keeps the same key across machines; only `source_hint` may differ per machine.
+
+Reading is backward compatible: an existing manifest full of absolute keys keeps working, and `scripts/manifest.py migrate <vault> --dry-run` converts it to contract v2 (merging collisions, keeping the newest `ingested_at`). New writes go through the same normalization, so a skill may pass an absolute path to `obsidian-wiki cache-update` and still have a portable key land in the manifest. For out-of-vault sources that cannot be vault-relative or home-relative, pass an explicit pseudo-key — do not let the tool fall back to an absolute path.
 
 **Recording provenance.** When you write a manifest entry, populate `pages_created` and `pages_updated` with the vault-relative page paths that source contributed to. This is what makes re-ingestion (when a source changes) able to find the pages to revisit, instead of guessing.
 
