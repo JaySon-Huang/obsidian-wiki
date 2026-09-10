@@ -29,14 +29,14 @@ Apply `WRITING.md` preferences only to generated `_insights.md` prose; keep the 
 
 The manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks every source file that has been ingested. If it doesn't exist, this is a fresh vault with nothing ingested.
 
-> **Source keys are canonical absolute paths** (`~` and env vars expanded). Never mix `~`-relative and absolute keys — the same file would be tracked twice and re-ingested. See `llm-wiki/SKILL.md` → `.manifest.json`. Repair a mixed manifest with `scripts/manifest.py normalize <vault>`.
+> **Source keys are portable — never bare absolute paths.** The canonical key is vault-relative for in-vault sources (`Raw/database/x.pdf`), `~`-relative for sources under `$HOME` (`~/.claude/projects/.../abc.jsonl`), or a namespaced pseudo-key (`repo:`/`url:`/`agent:`/`src:`) for sources with no portable path form. Never mix forms — the same file would be tracked twice and re-ingested. See `llm-wiki/SKILL.md` → `.manifest.json` (Source key contract v2). Convert a legacy absolute-key manifest with `scripts/manifest.py migrate <vault>`.
 
 ```json
 {
   "version": 1,
   "last_updated": "2026-04-06T10:30:00Z",
   "sources": {
-    "/absolute/path/to/file.md": {
+    "Raw/papers/attention.pdf": {
       "ingested_at": "2026-04-06T10:30:00Z",
       "size_bytes": 4523,
       "modified_at": "2026-04-05T08:00:00Z",
@@ -45,7 +45,7 @@ The manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks every sou
       "pages_created": ["concepts/transformers.md"],
       "pages_updated": ["entities/vaswani.md"]
     },
-    "/Users/name/.claude/projects/-Users-name-my-app/abc123.jsonl": {
+    "~/.claude/projects/-Users-name-my-app/abc123.jsonl": {
       "ingested_at": "2026-04-06T11:00:00Z",
       "size_bytes": 128000,
       "modified_at": "2026-04-06T09:00:00Z",
@@ -57,7 +57,8 @@ The manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks every sou
   },
   "projects": {
     "my-app": {
-      "source_path": "/Users/name/.claude/projects/-Users-name-my-app",
+      "source_repo": "github.com/owner/my-app",
+      "source_cwd_hint": "~/.claude/projects/-Users-name-my-app",
       "vault_path": "projects/my-app",
       "last_ingested": "2026-04-06T11:00:00Z",
       "conversations_ingested": 5,
