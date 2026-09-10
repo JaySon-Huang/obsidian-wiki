@@ -94,6 +94,13 @@ class TestWriteNormalization:
         assert "_raw/articles/foo.md" in sources
         assert str(src) not in sources
 
+    def test_new_in_vault_source_does_not_warn(self, vault, capsys):
+        src = vault / "_raw" / "foo.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("body", encoding="utf-8")
+        update_source(vault, src)
+        assert capsys.readouterr().err == ""
+
     def test_new_home_source_stored_home_relative(self, vault, home):
         src = home / ".claude" / "sessions" / "abc.jsonl"
         src.parent.mkdir(parents=True)
@@ -101,6 +108,25 @@ class TestWriteNormalization:
         update_source(vault, src)
         sources = _load_raw(vault)["sources"]
         assert "~/.claude/sessions/abc.jsonl" in sources
+
+    def test_non_portable_fallback_warns_on_stderr(self, vault, tmp_path, capsys):
+        # A source outside both the vault and $HOME has no portable key. The
+        # path is still stored for backward compatibility, but never silently.
+        src = tmp_path / "mnt" / "data"
+        src.mkdir(parents=True)
+        (src / "a.md").write_text("body", encoding="utf-8")
+        update_source(vault, src)
+        err = capsys.readouterr().err
+        assert "no portable key" in err
+        assert "absolute path" in err
+        assert str(src) in _load_raw(vault)["sources"]
+
+    def test_explicit_key_does_not_warn(self, vault, tmp_path, capsys):
+        src = tmp_path / "mnt" / "data"
+        src.mkdir(parents=True)
+        (src / "a.md").write_text("body", encoding="utf-8")
+        update_source(vault, src, key="repo:github.com/o/n")
+        assert capsys.readouterr().err == ""
 
     def test_explicit_pseudo_key_used_verbatim(self, vault, tmp_path):
         src = tmp_path / "checkout"  # outside vault and $HOME

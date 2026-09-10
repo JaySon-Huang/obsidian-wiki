@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -368,14 +369,29 @@ def update_source(
     accumulates machine absolute paths. Pass *key* explicitly for sources that
     have no filesystem representation in either form — a pseudo-key such as
     ``repo:github.com/owner/name``, ``url:https://...``, or ``agent:claude/<id>``.
-    When neither applies, the raw path is kept for backward compatibility.
+    When neither applies, the raw path is kept for backward compatibility and a
+    warning is written to stderr, because that entry is not portable across
+    machines.
     """
     # Hash outside the lock — hashing a large source tree can take seconds and
     # nothing else in the manifest depends on it.
     current_hash = compute_hash(source_path)
     now = datetime.now(timezone.utc).isoformat()
     explicit_key = key is not None
-    new_key = key if explicit_key else (stored_key(source_path, vault) or str(source_path))
+    if explicit_key:
+        new_key = key
+    else:
+        derived = stored_key(source_path, vault)
+        if derived is None:
+            new_key = str(source_path)
+            print(
+                f"warning: {source_path} is outside the vault and $HOME, so it has no "
+                f"portable key; storing the absolute path. Pass key=<repo:|url:|agent:> "
+                f"to keep the vault portable across machines.",
+                file=sys.stderr,
+            )
+        else:
+            new_key = derived
 
     with manifest_lock(vault):
         return _update_source_locked(

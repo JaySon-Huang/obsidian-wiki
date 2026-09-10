@@ -99,7 +99,7 @@
 
 以下条款构成契约正文，落点为 `llm-wiki/SKILL.md` 的 `.manifest.json` 章节。
 
-- **C1 — 禁止裸绝对路径（新写入）。** 任何新的持久化写入（manifest `sources` key、页面 frontmatter `sources:`、项目 `source_cwd`）都不得存储机器绝对路径；旧 vault 中已存在的绝对 key 保持可读（见 `Compatibility and Invariants`）。唯一的例外是**无法可移植化**的源：当源既不在 vault 内、也不在 `$HOME` 下，且调用方未提供 pseudo-key 时，`update_source` 会退化为原样保存该路径（非可移植，工具在 `migrate` 中给出警告）。调用方应显式传 `--key` 消除该例外。
+- **C1 — 禁止裸绝对路径（新写入）。** 任何新的持久化写入（manifest `sources` key、页面 frontmatter `sources:`、项目 `source_cwd`）都不得存储机器绝对路径；旧 vault 中已存在的绝对 key 保持可读（见 `Compatibility and Invariants`）。唯一的例外是**无法可移植化**的源：当源既不在 vault 内、也不在 `$HOME` 下，且调用方未提供 pseudo-key 时，`update_source` 会退化为原样保存该路径，并**向 stderr 输出 `no portable key` 告警**（不静默）；`migrate` 对同类保留项也会告警。调用方应显式传 `--key` 消除该例外。
 - **C2 — vault 内源用 vault-relative key。** POSIX 分隔符、无前导 `./`、不含 `..`，例如 `Raw/database/xxx.pdf`、`Clippings/xxx.md`。
 - **C3 — `$HOME` 下的 vault 外源用 home-relative key。** 以 `~` 开头，例如 `~/.claude/projects/-Users-name-my-app/abc123.jsonl`。`~` 在不同机器上展开为各自的 home，因此字符串本身可移植。
 - **C4 — 其余 vault 外源用 pseudo-key。** 不落在 `$HOME` 下的源（外部挂载、项目目录、网页）使用命名空间伪 key，禁止退化为绝对路径：git 项目用 `repo:<remote-url>`，网页用 `url:<canonical-url>`，会话日志用 `agent:<agent>/<id>`。
@@ -228,7 +228,7 @@ resolve_key(key, vault):
 
 - **解析单测**：`resolve_key` / `stored_key` 覆盖 vault 内、`$HOME` 下、pseudo-key、绝对路径四类输入，以及 `~` 与环境变量展开。
 - **匹配单测**：`_same_source` 在"旧绝对 key vs 新绝对查询"、"vault-relative key vs 绝对查询"、"home-relative key vs 绝对查询"下均命中；pseudo-key 不触发 `missing`。
-- **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径（已由 `tests/test_portable_keys.py` 覆盖）。
+- **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径**且 stderr 必须出现 `no portable key` 告警**；vault 内/`$HOME` 下/显式 `key=` 三种情形不得告警。由 `tests/test_portable_keys.py` 与 `tests/test_cache.py::TestCacheCLI` 覆盖。
 - **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价。
 - **文档契约测试**：新增 `tests/test_portable_path_docs.py`，断言 `llm-wiki` 契约段存在、相关 skill 引用契约，且非 `references/` 的 skill 文档中不出现 `"/absolute/"`、`"source_cwd":`、`source_cwd=`、`"path": "/`、`"source_path": "/`、`sources: ["/` 等存储型绝对路径字面量。`references/` 下的原始数据格式文档（如会话 `cwd` 字段）豁免。
 - **回归**：`tests/test_cache.py`、`tests/test_cache_manifest_shapes.py`、`tests/test_manifest_delta.py` 必须继续通过；新增用例不得改变既有跳过/修改判定。
@@ -254,7 +254,7 @@ resolve_key(key, vault):
 
 1. **保留 `_match_relative` basename 后缀兜底**（设计原计划删除）。真实 vault 里存在相对 ingest root 的遗留 key（如 `~/.claude/projects/` 下的 `-Users-x-github/abc123.jsonl`），删除兜底会让它们被误判为 NEW，且两个既有测试锁定了该容忍行为。现在兜底只在 `resolve_key` 不命中时作用于遗留形态。
 2. **`manifest.py delta` 的标准输出保持绝对路径**（设计原计划改为 stored key 形态）。delta 的 stdout 是临时输出，调用方据此打开文件；契约约束的是持久化 key，不是 stdout。改动它只会降低调用方可用性，没有契约收益。
-3. **无可移植形式的源退回保存原路径并告警，而非直接报错**（设计风险 #7 / 严格 C1）。硬报错会破坏外部挂载源的真实用法与既有测试。改为：`stored_key` 返回 `None` → 调用方应传 `--key` → 未传时保存原路径，`migrate` 打印 `no portable form` 警告。C1 已把该例外写入条款。
+3. **无可移植形式的源退回保存原路径并告警，而非直接报错**（设计风险 #7 / 严格 C1）。硬报错会破坏外部挂载源的真实用法与既有测试。改为：`stored_key` 返回 `None` → 调用方应传 `--key` → 未传时保存原路径并**向 stderr 打印 `no portable key` 告警**（写入路径，`update_source` 与 `cache-update` CLI 均覆盖）；`migrate` 对同类保留项打印 `no portable form` 告警。C1 已把该例外写入条款。**修订**：初版仅在 `migrate` 告警、写入路径静默，评审指出该不一致后，写入路径已同步告警。
 4. **显式 `--key` 是权威的，会 re-key 已匹配条目**（设计未明确）。冒烟测试发现：manifest 中已按路径跟踪的条目，仅传 `--key` 不会生效。现在显式 key 会把匹配条目 re-key 到该 key（若目标 key 已存在则合并）；派生 key 不做 re-key，避免意外重命名。
 5. **`_newest` 额外合并 `pages_produced`**（设计未提）。原 `_newest` 只并 `pages_created` / `pages_updated`，而 cache 时代使用 `pages_produced`，迁移碰撞会静默丢失 provenance。现在三个列表字段都合并。
 

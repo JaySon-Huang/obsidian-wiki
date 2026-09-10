@@ -268,6 +268,19 @@ class TestCacheCLI:
         sources = _load_manifest(vault)
         assert sources[str(src_file)]["pages_produced"] == ["concepts/foo.md", "entities/bar.md"]
 
+    def test_cache_update_non_portable_source_warns_on_stderr(self, vault, src_file):
+        # src_file lives outside the vault and $HOME, so the fallback absolute
+        # key is stored — but the CLI must say so rather than stay silent.
+        proc = self._run("cache-update", str(vault), str(src_file))
+        assert proc.returncode == 0
+        assert "no portable key" in proc.stderr
+
+    def test_cache_update_explicit_key_warns_nothing(self, vault, src_file):
+        proc = self._run("cache-update", str(vault), str(src_file), "--key", "repo:o/n")
+        assert proc.returncode == 0
+        assert "no portable key" not in proc.stderr
+        assert "repo:o/n" in _load_manifest(vault)
+
 
 class TestManifestLock:
     """Concurrent writers must serialize instead of clobbering the manifest."""
