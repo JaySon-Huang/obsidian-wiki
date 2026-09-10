@@ -253,6 +253,24 @@ def stored_key(path: Path, vault: Path) -> str | None:
     return None
 
 
+def normalize_hint(hint: str | None, vault: Path) -> str | None:
+    """Normalize a ``source_hint`` to its portable spelling.
+
+    A hint is advisory and never used for identity, but it must not smuggle a
+    machine absolute path into a synced vault. An absolute (or ``~``/``$VAR``)
+    hint is run through the same rule as :func:`stored_key`: under the vault it
+    becomes vault-relative, under ``$HOME`` home-relative. This matters because a
+    shell expands an unquoted ``~/docs/x`` to ``/home/me/docs/x`` before the CLI
+    ever sees it. Relative hints and hints with no portable form are kept as-is.
+    """
+    if not hint:
+        return hint
+    if not (hint.startswith("~") or hint.startswith("$") or os.path.isabs(hint)):
+        return hint
+    portable = stored_key(Path(_expand_key(hint)), vault)
+    return portable if portable is not None else hint
+
+
 def _same_source(stored_key_value: str | None, query: Path, vault: Path) -> bool:
     """True if a manifest key refers to the same source as *query*.
 
@@ -420,6 +438,10 @@ def update_source(
             )
         else:
             new_key = derived
+
+    # A shell expands an unquoted "~/..." hint to an absolute path before the CLI
+    # sees it; normalize it back so no machine path lands in the manifest.
+    source_hint = normalize_hint(source_hint, vault)
 
     with manifest_lock(vault):
         return _update_source_locked(

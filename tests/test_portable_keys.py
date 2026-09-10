@@ -13,6 +13,7 @@ import pytest
 
 from obsidian_wiki.cache import (
     check_sources,
+    normalize_hint,
     resolve_key,
     stored_key,
     update_source,
@@ -82,6 +83,28 @@ class TestStoredKey:
 
     def test_outside_both_is_not_portable(self, vault, tmp_path):
         assert stored_key(tmp_path / "elsewhere" / "a.md", vault) is None
+
+
+class TestNormalizeHint:
+    def test_absolute_under_home_becomes_tilde(self, vault, home):
+        assert normalize_hint(str(home / "docs" / "a.md"), vault) == "~/docs/a.md"
+
+    def test_tilde_hint_unchanged(self, vault, home):
+        assert normalize_hint("~/docs/a.md", vault) == "~/docs/a.md"
+
+    def test_absolute_under_vault_becomes_vault_relative(self, vault):
+        assert normalize_hint(str(vault / "Raw" / "x.md"), vault) == "Raw/x.md"
+
+    def test_relative_hint_kept_verbatim(self, vault):
+        assert normalize_hint("docs/x.md", vault) == "docs/x.md"
+
+    def test_non_portable_absolute_kept_verbatim(self, vault, tmp_path):
+        p = str(tmp_path / "mnt" / "x.md")  # outside vault and $HOME
+        assert normalize_hint(p, vault) == p
+
+    def test_empty_hint(self, vault):
+        assert normalize_hint(None, vault) is None
+        assert normalize_hint("", vault) == ""
 
 
 class TestWriteNormalization:
@@ -177,6 +200,15 @@ class TestWriteNormalization:
         src.write_text("body", encoding="utf-8")
         update_source(vault, src, key="src:abcdef01", source_hint="~/docs/a.md")
         update_source(vault, src, key="src:abcdef01")  # no hint this time
+        entry = _load_raw(vault)["sources"]["src:abcdef01"]
+        assert entry["source_hint"] == "~/docs/a.md"
+
+    def test_shell_expanded_source_hint_is_normalized(self, vault, home, tmp_path):
+        # What the shell actually passes for an unquoted '~/docs/a.md'.
+        src = tmp_path / "mnt" / "a.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("body", encoding="utf-8")
+        update_source(vault, src, key="src:abcdef01", source_hint=str(home / "docs" / "a.md"))
         entry = _load_raw(vault)["sources"]["src:abcdef01"]
         assert entry["source_hint"] == "~/docs/a.md"
 

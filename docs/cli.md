@@ -203,7 +203,7 @@ obsidian-wiki batch-plan /path/to/vault ~/research --max-mb 4 --max-files 30
 obsidian-wiki cache-check /path/to/vault ~/research/*.pdf
 obsidian-wiki cache-update /path/to/vault ~/research/paper.pdf --pages concepts/attention.md
 obsidian-wiki cache-update /path/to/vault /srv/data/report.pdf --key repo:github.com/acme/reports
-obsidian-wiki cache-update /path/to/vault /srv/data/scan.pdf --key src:1f2a9c3d --source-hint ~/docs/scan.pdf
+obsidian-wiki cache-update /path/to/vault /srv/data/scan.pdf --key src:1f2a9c3d --source-hint '~/docs/scan.pdf'
 obsidian-wiki ast-extract ./src --pretty
 obsidian-wiki code-understand --project . --since <last_commit_synced> --pretty
 ```
@@ -231,7 +231,7 @@ Manifest `sources` keys — and the `sources:` frontmatter on pages — are **po
 | Agent session | pseudo-key | `agent:claude/<id>` |
 | Other out-of-vault file with no stable identity | pseudo-key (+ optional hint) | `src:<sha256-8>` + `source_hint: ~/docs/x.md` |
 
-`cache-update` normalises the key automatically. Pass `--key` for a source with no portable path form — the explicit key is authoritative, and re-keys an entry the manifest previously tracked by path. The available namespaces are `repo:` (git remote), `url:` (canonical URL), `agent:` (session log), and `src:<sha256-8>` (a content-hash key for an out-of-vault file with no stable identity). For that last case the key alone does not say where the file lives, so pass `--source-hint <~-relative path>` to record it; the hint is advisory (never an identity key), and omitting the flag leaves any existing hint in place. If a source is outside the vault and `$HOME` and no `--key` is given, the absolute path is stored for backward compatibility but a `no portable key` warning goes to stderr.
+`cache-update` normalises the key automatically. Pass `--key` for a source with no portable path form — the explicit key is authoritative, and re-keys an entry the manifest previously tracked by path. The available namespaces are `repo:` (git remote), `url:` (canonical URL), `agent:` (session log), and `src:<sha256-8>` (a content-hash key for an out-of-vault file with no stable identity). For that last case the key alone does not say where the file lives, so pass `--source-hint <path>` to record it; the hint is advisory (never an identity key), and omitting the flag leaves any existing hint in place. Quote the value (`--source-hint '~/docs/scan.pdf'`) so the shell does not expand `~` first — and even if it does, the hint is normalized: an absolute path under `$HOME` is stored back as `~/…`, and one under the vault as vault-relative. If a source is outside the vault and `$HOME` and no `--key` is given, the absolute path is stored for backward compatibility but a `no portable key` warning goes to stderr.
 
 To convert a manifest that already holds legacy absolute keys:
 

@@ -291,6 +291,15 @@ class TestCacheCLI:
         assert data["source_hint"] == "~/docs/a.md"
         assert _load_manifest(vault)["src:abcdef01"]["source_hint"] == "~/docs/a.md"
 
+    def test_cache_update_normalizes_shell_expanded_source_hint(self, vault, src_file):
+        # subprocess passes argv directly, so pass what a shell would: an
+        # unquoted ~/docs/a.md arrives already expanded to an absolute path.
+        expanded = str(Path.home() / "docs" / "a.md")
+        proc = self._run("cache-update", str(vault), str(src_file),
+                         "--key", "src:beef", "--source-hint", expanded)
+        assert proc.returncode == 0
+        assert _load_manifest(vault)["src:beef"]["source_hint"] == "~/docs/a.md"
+
 
 class TestManifestLock:
     """Concurrent writers must serialize instead of clobbering the manifest."""
