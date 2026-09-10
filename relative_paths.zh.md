@@ -1,7 +1,7 @@
 # 相对路径契约：多机同步下的路径可移植性设计
 
 **Date**: 2026-09-11
-**Status**: Draft
+**Status**: Implemented (Phases A–D on `feat/relative-paths-contract`; design decisions and as-built adjustments below)
 **Purpose**: 统一 `.manifest.json` 源 key、页面 frontmatter `sources:`、以及项目 `source_cwd` 的路径表示，使同一个 vault 在多台机器间同步、查阅、再摄取时不再把机器绝对路径写回数据。
 
 ---
@@ -99,7 +99,7 @@
 
 以下条款构成契约正文，落点为 `llm-wiki/SKILL.md` 的 `.manifest.json` 章节。
 
-- **C1 — 禁止裸绝对路径。** 任何持久化字段（manifest `sources` key、页面 frontmatter `sources:`、项目 `source_cwd`）都不得存储机器绝对路径。
+- **C1 — 禁止裸绝对路径（新写入）。** 任何新的持久化写入（manifest `sources` key、页面 frontmatter `sources:`、项目 `source_cwd`）都不得存储机器绝对路径；旧 vault 中已存在的绝对 key 保持可读（见 `Compatibility and Invariants`）。唯一的例外是**无法可移植化**的源：当源既不在 vault 内、也不在 `$HOME` 下，且调用方未提供 pseudo-key 时，`update_source` 会退化为原样保存该路径（非可移植，工具在 `migrate` 中给出警告）。调用方应显式传 `--key` 消除该例外。
 - **C2 — vault 内源用 vault-relative key。** POSIX 分隔符、无前导 `./`、不含 `..`，例如 `Raw/database/xxx.pdf`、`Clippings/xxx.md`。
 - **C3 — `$HOME` 下的 vault 外源用 home-relative key。** 以 `~` 开头，例如 `~/.claude/projects/-Users-name-my-app/abc123.jsonl`。`~` 在不同机器上展开为各自的 home，因此字符串本身可移植。
 - **C4 — 其余 vault 外源用 pseudo-key。** 不落在 `$HOME` 下的源（外部挂载、项目目录、网页）使用命名空间伪 key，禁止退化为绝对路径：git 项目用 `repo:<remote-url>`，网页用 `url:<canonical-url>`，会话日志用 `agent:<agent>/<id>`。
@@ -115,7 +115,9 @@
 | git 项目（可在任意路径） | pseudo-key | `repo:github.com/Ar9av/obsidian-wiki` | 否 |
 | 网页 | pseudo-key | `url:https://example.com/article` | 否 |
 | agent 会话 | pseudo-key | `agent:claude/<session-id>` | 否 |
-| 其它 vault 外且无稳定标识 | pseudo-key + hint | `src:<sha256-8>` + `source_hint: ~/docs/x.md` | 否 |
+| 其它 vault 外且无稳定标识 | 显式 pseudo-key + 可选 hint | `src:<sha256-8>` + `source_hint: ~/docs/x.md` | 否 |
+
+最后一行**不会自动推导**：`stored_key` 对该类路径返回 `None`，调用方必须经 `--key` 显式指定，否则退化为原样保存路径（见 C1 例外）。`src:<sha256-8>` 只是推荐的伪 key 命名，不是工具生成的值。
 
 `cache.py` 现有 `_is_file_key` 已按 `://` 与 `scheme:` 前缀把 pseudo-key 排除在文件存在性检查之外（`obsidian_wiki/cache.py:199-202`），因此 C4 与既有实现兼容，`missing` 检测不会对 pseudo-key 误报。
 
@@ -139,13 +141,13 @@ resolve_key(key, vault):
 
 - `path` 在 `vault` 内 → 返回 vault 相对路径；
 - `path` 在 `$HOME` 下 → 返回 `~` 相对路径；
-- 否则 → 返回调用方提供的 pseudo-key（无法自动推导时报错并要求显式指定，不静默写绝对路径）。
+- 否则 → 返回 `None`（无可移植表示）。调用方应显式传 `key=`；未传时 `update_source` 退回保存原始路径以保持向后兼容，这是 C1 记录的唯一例外。
 
 落点：
 
-- `obsidian_wiki/cache.py` 的 `update_source` / `_update_source_locked`：把当前 `str(source_path)` 替换为 `stored_key(source_path, vault)`，从写入侧堵住绝对路径。`_same_source`、`_missing_on_disk` 增加 `~`/环境变量展开。
-- `scripts/manifest.py`：`canonical()` 语义由"绝对化"改为 `resolve_key`；`delta` 输出 `stored_key` 形态而非绝对路径；移除 `_match_relative` 基于 basename 的后缀兜底（该兜底在 basename 撞名时会误匹配），改用第 4 条 vault 解析。
-- `obsidian-wiki cache-update` CLI 透传调用方路径，因此 skill 可以继续传绝对路径，落盘仍被归一为相对形态 —— 这让文档改动与代码改动可以分批上线而不互相阻塞。
+- `obsidian_wiki/cache.py` 的 `update_source` / `_update_source_locked`：新条目使用 `stored_key(source_path, vault)`；无显式 `key` 且 `stored_key` 为 `None` 时退回原始路径。`_same_source`、`_missing_on_disk` 增加 `~`/环境变量展开。新增可选 `key=` 参数：**显式 key 是权威的**，即使 manifest 中已有按路径匹配的旧条目，也会把该条目 re-key 到显式 key（读取侧仍双向兼容）。
+- `scripts/manifest.py`：新增 `resolve_key` / `stored_key` 供解析与迁移使用；`cmd_delta` 用 `resolve_key` 构建已知源映射，使 vault-relative / home-relative key 能被扫描到的绝对路径直接命中。
+- `obsidian-wiki cache-update` CLI 透传调用方路径，并新增 `--key`：skill 可以继续传绝对路径（落盘被归一为相对形态），对无可移植路径的源则显式传伪 key。这让文档改动与代码改动可以分批上线而不互相阻塞。
 
 ### 5) 读取侧兼容与降级
 
@@ -156,17 +158,19 @@ resolve_key(key, vault):
 | manifest 中是 home-relative key，调用方传绝对路径 | 展开 `~` 后命中（本设计新增） |
 | pseudo-key | 不参与文件存在性检查；由内容 hash 或显式映射参与增量判断 |
 | 本机不存在该源（跨机同步的另一台机器） | 不误报 missing；若 delta 扫描不到则视为"本机无此源"，不触发重摄取 |
-| key 无法归类且非绝对 | 报错并提示显式 pseudo-key，不静默按 vault 相对处理 |
+| 遗留 ingest-root 相对 key（如 `-Users-x/abc.jsonl`） | 按原字符串保留，不报错、不改写；`_match_relative` basename 后缀兜底继续兼容 |
+| 调用方显式传 `--key` | re-key 已按路径匹配的条目；读取侧对旧 key 仍兼容 |
+| `manifest.py delta` 标准输出 | 仍输出绝对路径——这是临时输出，调用方用它打开文件，不是存盘 key |
 
 ### 6) 迁移与回滚
 
-新增 `scripts/manifest.py migrate <vault> [--dry-run]`（由现有 `normalize` 演进）：
+新增 `scripts/manifest.py migrate <vault> [--dry-run]`；`normalize` 保留为等价别名，旧指令不致失效：
 
 - vault 内绝对 key → vault-relative；
 - `$HOME` 下绝对 key → home-relative；
-- 可识别为 git 项目/网页的 → 对应 pseudo-key；
-- 其余 → 保留并打印警告，要求人工指定 pseudo-key；
-- 合并因归一产生的碰撞条目，沿用 `_newest()` 语义保留最新 `ingested_at`。
+- 不在 vault 内也不在 `$HOME` 下的绝对 key → 保留为绝对路径并打印 `no portable form` 警告（不删除，避免丢失 provenance）；
+- pseudo-key 与遗留 ingest-root 相对 key → 原样保留（后者无法在无文件的情况下与 vault-relative 区分，改写有损坏风险）；
+- 合并因归一产生的碰撞条目，`_newest()` 保留最新 `ingested_at`，并合并 `pages_created` / `pages_updated` / `pages_produced` 三个列表。`pages_produced` 是本实现补上的：原 `_newest` 只并前两个字段，迁移碰撞会静默丢掉 cache 时代的 provenance。
 
 兼容性保证：**读取始终兼容旧绝对 key**，故迁移是可选的性能/整洁优化而非正确性前提。回滚方式为 `git checkout -- .manifest.json`（迁移只改 manifest，不改页面内容；页面 frontmatter 由后续 skill 运行逐步收敛）。
 
@@ -179,7 +183,7 @@ resolve_key(key, vault):
 1. `content_hash` 仍是增量跳过的首要信号；路径形态变化不改变跳过判定。
 2. manifest 的两种 `sources` 形态（dict-keyed 与 list-of-objects）继续被透明读取；`update_source` 继续在保持形态的前提下原地更新 `obsidian_wiki/cache.py:7-20`。
 3. `cache-update` 的 manifest 加锁与原子写不变（`manifest_lock`）。
-4. 旧 vault 不迁移也能正确工作；新写入不再产生新的绝对 key。
+4. 旧 vault 不迁移也能正确工作；当源可被表示为 vault-relative / home-relative，或调用方显式传了 `key=` 时，新写入不再产生绝对 key。无法可移植化的源是已知例外（见 C1）。
 5. `pages_created` / `pages_produced` 自始即为 vault 相对路径（`.skills/llm-wiki/SKILL.md:157`），不在本次变更范围内。
 6. 符号链接镜像与 `setup.sh install_skills` 行为不变。
 
@@ -190,14 +194,14 @@ resolve_key(key, vault):
 ### Phase A：定义契约（低风险，先行）
 
 - 重写 `.skills/llm-wiki/SKILL.md:146-158` 的 `.manifest.json` 章节为契约 v2 正文（C1–C6 + key 形态表）。
-- 新增 `docs/relative_paths.zh.md`（本文件）作为设计依据；是否并入 `docs/README.md` 索引在完成后决定。
+- 新增仓库根目录 `relative_paths.zh.md`（本文件）作为设计依据；是否移入 `docs/` 并登记索引留待完成后决定（见 Open Questions #3）。
 - 不触碰代码，此阶段仅统一术语与规则。
 
 ### Phase B：代码归一与解析（核心）
 
-- 在 `obsidian_wiki/cache.py` 增加 `resolve_key` / `stored_key`；改造 `_same_source`、`_missing_on_disk`、`update_source`。
-- 在 `scripts/manifest.py` 用同一对函数统一 `canonical()`、`delta`、`normalize`，移除 basename 后缀兜底。
-- 保证读取路径先兼容旧的绝对 key，再叠加新形态；现有测试必须全绿。
+- 在 `obsidian_wiki/cache.py` 增加 `resolve_key` / `stored_key`；改造 `_same_source`、`_missing_on_disk`、`update_source`；`cache-update` 增加 `--key`。
+- 在 `scripts/manifest.py` 增加同源 helper，`cmd_delta` 改用 `resolve_key` 构建已知源映射；`_match_relative` basename 后缀兜底**保留**用于遗留 ingest-root 相对 key（实现调整，见 As-built Notes #1）。
+- 保证读取路径先兼容旧的绝对 key，再叠加新形态；现有测试必须全绿（唯一豁免：`test_update_appends_new_list_entry` 的断言按新契约更新为 vault 相对 key）。
 
 ### Phase C：skill 文档收敛
 
@@ -224,11 +228,11 @@ resolve_key(key, vault):
 
 - **解析单测**：`resolve_key` / `stored_key` 覆盖 vault 内、`$HOME` 下、pseudo-key、绝对路径四类输入，以及 `~` 与环境变量展开。
 - **匹配单测**：`_same_source` 在"旧绝对 key vs 新绝对查询"、"vault-relative key vs 绝对查询"、"home-relative key vs 绝对查询"下均命中；pseudo-key 不触发 `missing`。
-- **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative，绝不落盘绝对路径。
-- **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并。
-- **文档契约测试**：仿照仓库既有 `tests/test_*_docs.py` 惯例新增测试，断言 `llm-wiki` 契约段存在，且 `wiki-status`/`wiki-update`/`wiki-ingest`/`claude-history-ingest`/`wiki-query` 的示例中不出现 `/absolute`、`/Users/`、`/home/` 等模式。
+- **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径（已由 `tests/test_portable_keys.py` 覆盖）。
+- **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价。
+- **文档契约测试**：新增 `tests/test_portable_path_docs.py`，断言 `llm-wiki` 契约段存在、相关 skill 引用契约，且非 `references/` 的 skill 文档中不出现 `"/absolute/"`、`"source_cwd":`、`source_cwd=`、`"path": "/`、`"source_path": "/`、`sources: ["/` 等存储型绝对路径字面量。`references/` 下的原始数据格式文档（如会话 `cwd` 字段）豁免。
 - **回归**：`tests/test_cache.py`、`tests/test_cache_manifest_shapes.py`、`tests/test_manifest_delta.py` 必须继续通过；新增用例不得改变既有跳过/修改判定。
-- **端到端烟雾**：在含绝对 key 的旧 vault 上依次执行 `cache-check`（应正确识别 unchanged）→ `update_source`（应写入相对 key）→ `migrate`（应无残留绝对 key）。
+- **端到端烟雾**：在含绝对 key 的旧 vault 上依次执行 `cache-check`（应正确识别 unchanged）→ `update_source`（应写入相对 key）→ `migrate`（可移植 key 应无残留绝对路径；不可移植的源按 C1 例外保留）。
 
 ---
 
@@ -237,10 +241,24 @@ resolve_key(key, vault):
 1. **home-relative 依赖 `$HOME` 布局** —— 两台机器 home 结构不同时，`~` 相对源仍可能失配。缓解：失配只降级为"本机无此源"，不触发错误写回；确需定位时用 `source_hint`。
 2. **agent 历史目录名编码了原始绝对 cwd** —— `~/.claude/projects/-Users-name-my-app/` 中的目录名本身机器相关，`~` 相对也救不回。缓解：会话日志优先使用 `agent:` pseudo-key + 内容 hash 作为身份；接受跨机重新摄取作为已知降级。
 3. **迁移期间的混合形态** —— 归一可能让两条旧 key 碰撞。缓解：`resolve_key` 读取兼容 + 迁移用 `_newest()` 合并，且迁移前强制 `--dry-run`。
-4. **`manifest.py` 移除 basename 后缀兜底后的行为变化** —— 依赖该兜底的极端 key 可能失配。缓解：新增基于 vault 根的确定性解析覆盖原场景，并用测试锁定。
+4. **basename 后缀兜底的误匹配** —— 保留 `_match_relative` 后，basename 相同的遗留 ingest-root 相对 key 理论上可能误匹配。缓解：`resolve_key` 的确定性解析优先，兜底仅在解析不命中时作用于遗留形态；影响面限于非规范 key，且迁移可逐步消除。
 5. **文档再次漂移** —— 缓解：契约测试在 CI 中失败即阻断。
 6. **与上游持续冲突** —— 缓解：Phase E 上游化；否则将 fork 差异集中到少数段落，减少每次 rebase 的冲突面。
-7. **pseudo-key 无法自动推导** —— 缓解：`stored_key` 对无法归类的 vault 外路径显式报错，要求调用方指定 pseudo-key，而非静默写绝对路径。
+7. **pseudo-key 无法自动推导** —— 缓解：`stored_key` 对无法归类的 vault 外路径返回 `None`，调用方经 `--key` 显式指定；未指定时退回保存原路径并在 `migrate` 中告警，绝不静默丢弃条目。
+
+---
+
+## As-built Notes（实现与设计的五处调整）
+
+落地实现与上面的原始设计有五处有意偏离，一律以生产安全为先；在此记录，避免文档与代码再次背离。
+
+1. **保留 `_match_relative` basename 后缀兜底**（设计原计划删除）。真实 vault 里存在相对 ingest root 的遗留 key（如 `~/.claude/projects/` 下的 `-Users-x-github/abc123.jsonl`），删除兜底会让它们被误判为 NEW，且两个既有测试锁定了该容忍行为。现在兜底只在 `resolve_key` 不命中时作用于遗留形态。
+2. **`manifest.py delta` 的标准输出保持绝对路径**（设计原计划改为 stored key 形态）。delta 的 stdout 是临时输出，调用方据此打开文件；契约约束的是持久化 key，不是 stdout。改动它只会降低调用方可用性，没有契约收益。
+3. **无可移植形式的源退回保存原路径并告警，而非直接报错**（设计风险 #7 / 严格 C1）。硬报错会破坏外部挂载源的真实用法与既有测试。改为：`stored_key` 返回 `None` → 调用方应传 `--key` → 未传时保存原路径，`migrate` 打印 `no portable form` 警告。C1 已把该例外写入条款。
+4. **显式 `--key` 是权威的，会 re-key 已匹配条目**（设计未明确）。冒烟测试发现：manifest 中已按路径跟踪的条目，仅传 `--key` 不会生效。现在显式 key 会把匹配条目 re-key 到该 key（若目标 key 已存在则合并）；派生 key 不做 re-key，避免意外重命名。
+5. **`_newest` 额外合并 `pages_produced`**（设计未提）。原 `_newest` 只并 `pages_created` / `pages_updated`，而 cache 时代使用 `pages_produced`，迁移碰撞会静默丢失 provenance。现在三个列表字段都合并。
+
+另有一处测试修正：`test_update_appends_new_list_entry` 的断言由绝对路径改为 vault 相对 key `_raw/foo.md`——那条断言正是旧契约的体现。
 
 ---
 
@@ -252,7 +270,7 @@ resolve_key(key, vault):
 
 **C. 全部 vault 外源一律用 pseudo-key（不用 home-relative）。** 部分否决：对 `$HOME` 下、跨机布局一致的常见源（agent 历史缓存、个人文档），home-relative 更直观、保留了可重新打开文件的能力；强制 pseudo-key 会丢失这一能力并需要额外的 hash 身份映射。折中采用 C3 + C4 的混合。
 
-**D. 只改文档、不动 `manifest.py`。** 否决：代码会在 `delta` 输出中继续吐绝对路径，文档与实现持续矛盾，问题会在下一次 ingest 复现。
+**D. 只改文档、不动 `manifest.py`。** 否决：`manifest.py` 的 `canonical()` 仍无条件绝对化，`cmd_delta` 也按绝对路径构建已知源映射，写入侧会继续产生绝对 key，文档与实现持续矛盾，问题会在下一次 ingest 复现。
 
 ---
 
