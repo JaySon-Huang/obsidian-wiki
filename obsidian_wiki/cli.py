@@ -1288,7 +1288,7 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
 
 
 def cmd_cache_update(args: argparse.Namespace) -> int:
-    from obsidian_wiki.cache import stored_key, update_source
+    from obsidian_wiki.cache import normalize_hint, stored_key, update_source
     vault = Path(args.vault).expanduser().resolve()
     source = Path(args.source).expanduser().resolve()
     pages = args.pages or []
@@ -1301,7 +1301,9 @@ def cmd_cache_update(args: argparse.Namespace) -> int:
         "content_hash": h,
     }
     if args.source_hint is not None:
-        out["source_hint"] = args.source_hint
+        # Echo the value as stored, not the raw argv, so the receipt matches the
+        # manifest even when the shell expanded an unquoted ~ before we saw it.
+        out["source_hint"] = normalize_hint(args.source_hint, vault)
     print(json.dumps(out))
     return 0
 

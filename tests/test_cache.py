@@ -298,7 +298,10 @@ class TestCacheCLI:
         proc = self._run("cache-update", str(vault), str(src_file),
                          "--key", "src:beef", "--source-hint", expanded)
         assert proc.returncode == 0
-        assert _load_manifest(vault)["src:beef"]["source_hint"] == "~/docs/a.md"
+        stored = _load_manifest(vault)["src:beef"]["source_hint"]
+        assert stored == "~/docs/a.md"
+        # The receipt must report what was stored, not the raw argv.
+        assert json.loads(proc.stdout)["source_hint"] == stored
 
 
 class TestManifestLock:
