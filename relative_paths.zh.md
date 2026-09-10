@@ -262,7 +262,7 @@ resolve_key(key, vault):
 
 另有一处测试修正：`test_update_appends_new_list_entry` 的断言由绝对路径改为 vault 相对 key `_raw/foo.md`——那条断言正是旧契约的体现。
 
-**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。
+**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。另有一处文档补漏（d）：`docs/cli.md` 之前漏写第四种伪 key 命名空间 `src:<sha256-8>`，已补齐，并将文档契约测试加强为强制 `repo:`/`url:`/`agent:`/`src:` 四个命名空间同时出现在 `docs/cli.md` 与 `llm-wiki` 契约中。
 
 ---
 

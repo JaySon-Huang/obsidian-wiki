@@ -185,7 +185,7 @@ Available for automation, scripting, and debugging. Skills call some of these in
 | `graph-analyse <vault> --path A B` / `--around PAGE --depth N [--direction in\|out\|both]` | Query modes: shortest link path between two pages; N-hop neighbourhood of a page (`--direction in` = blast radius) |
 | `batch-plan <vault> <source_dir>` | Split a source directory into parallel-ingest batches, skipping unchanged files |
 | `cache-check <vault> <sources...>` | Which sources are new / modified / unchanged vs. `.manifest.json`. Vault-local sources no longer on disk are reported as `missing`; machine-local sources absent on this host (e.g. synced from another machine) are reported separately as `unavailable` |
-| `cache-update <vault> <source> [--key <pseudo-key>] [--pages <page>...]` | Record a source's SHA-256 in `.manifest.json` after ingest. The stored key is normalised to a portable form; `--key` sets it explicitly (`repo:`/`url:`/`agent:`) for sources outside the vault and `$HOME` |
+| `cache-update <vault> <source> [--key <pseudo-key>] [--pages <page>...]` | Record a source's SHA-256 in `.manifest.json` after ingest. The stored key is normalised to a portable form; `--key` sets it explicitly (`repo:`/`url:`/`agent:`/`src:`) for sources outside the vault and `$HOME` |
 | `cache-hash <path>` | Compute a file or directory hash (no manifest I/O) |
 | `ast-extract <path>` | Extract classes, functions, and imports from code — no LLM, no API calls |
 | `code-understand --project <dir> [--backend auto\|builtin\|codegraph] [--since <sha>] [--changed <file>...] [--max-symbols N] [--pretty]` | Emit a ranked code-understanding focus map (symbols + file:line citations) for a project; CodeGraph when available, built-in AST + rg otherwise. `--backend` beats the resolved `CODE_UNDERSTANDING_*` config (env → project `.env` → global config). Used by wiki-update Step 3b. |
@@ -225,9 +225,12 @@ Manifest `sources` keys — and the `sources:` frontmatter on pages — are **po
 |---|---|---|
 | Inside the vault | vault-relative | `Raw/papers/attention.pdf` |
 | Under `$HOME` | `~`-relative | `~/.claude/projects/.../abc123.jsonl` |
-| Git project, web page, agent session | pseudo-key | `repo:github.com/o/n`, `url:https://…`, `agent:claude/<id>` |
+| Git project | pseudo-key | `repo:github.com/o/n` |
+| Web page | pseudo-key | `url:https://example.com/article` |
+| Agent session | pseudo-key | `agent:claude/<id>` |
+| Other out-of-vault file with no stable identity | pseudo-key (+ optional hint) | `src:<sha256-8>` + `source_hint: ~/docs/x.md` |
 
-`cache-update` normalises the key automatically. Pass `--key` for a source with no portable path form — the explicit key is authoritative, and re-keys an entry the manifest previously tracked by path. If a source is outside the vault and `$HOME` and no `--key` is given, the absolute path is stored for backward compatibility but a `no portable key` warning goes to stderr.
+`cache-update` normalises the key automatically. Pass `--key` for a source with no portable path form — the explicit key is authoritative, and re-keys an entry the manifest previously tracked by path. The available namespaces are `repo:` (git remote), `url:` (canonical URL), `agent:` (session log), and `src:<sha256-8>` (a content-hash key for an out-of-vault file with no stable identity, optionally paired with a `~`-relative `source_hint`). If a source is outside the vault and `$HOME` and no `--key` is given, the absolute path is stored for backward compatibility but a `no portable key` warning goes to stderr.
 
 To convert a manifest that already holds legacy absolute keys:
 

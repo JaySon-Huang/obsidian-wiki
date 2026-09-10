@@ -91,6 +91,14 @@ def test_cli_docs_document_the_new_surface() -> None:
     assert "manifest.py" in cli and "migrate" in cli, (
         "docs/cli.md does not document scripts/manifest.py migrate"
     )
+    for namespace in ("repo:", "url:", "agent:", "src:"):
+        assert namespace in cli, f"docs/cli.md omits the {namespace!r} key namespace"
+
+
+def test_contract_documents_every_key_namespace() -> None:
+    body = (SKILLS_DIR / "llm-wiki" / "SKILL.md").read_text(encoding="utf-8")
+    for namespace in ("repo:", "url:", "agent:", "src:"):
+        assert namespace in body, f"llm-wiki contract omits the {namespace!r} namespace"
 
 
 def test_architecture_docs_state_the_key_contract() -> None:
