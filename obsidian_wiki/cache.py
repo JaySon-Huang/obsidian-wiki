@@ -374,11 +374,12 @@ def update_source(
     # nothing else in the manifest depends on it.
     current_hash = compute_hash(source_path)
     now = datetime.now(timezone.utc).isoformat()
-    new_key = key if key is not None else (stored_key(source_path, vault) or str(source_path))
+    explicit_key = key is not None
+    new_key = key if explicit_key else (stored_key(source_path, vault) or str(source_path))
 
     with manifest_lock(vault):
         return _update_source_locked(
-            vault, source_path, new_key, current_hash, now, pages_produced
+            vault, source_path, new_key, explicit_key, current_hash, now, pages_produced
         )
 
 
@@ -386,6 +387,7 @@ def _update_source_locked(
     vault: Path,
     source_path: Path,
     new_key: str,
+    explicit_key: bool,
     current_hash: str,
     now: str,
     pages_produced: list[str] | None,
@@ -405,6 +407,9 @@ def _update_source_locked(
         if target is None:
             target = {"path": new_key}
             sources.append(target)
+        elif explicit_key and target.get("path") != new_key:
+            # An explicit key is authoritative: re-key the matched entry.
+            target["path"] = new_key
         target["content_hash"] = _format_hash(target.get("content_hash"), current_hash)
         target["last_ingested"] = now
         if pages_produced is not None:
@@ -417,8 +422,19 @@ def _update_source_locked(
             if _same_source(existing_key, source_path, vault):
                 match_key = existing_key
                 break
-        # A matched legacy entry keeps its existing key; only new entries use the
-        # portable form, so an in-place update never re-keys a dict by surprise.
+        if match_key is not None and explicit_key and match_key != new_key:
+            # Explicit key wins: move the entry rather than updating the legacy
+            # key in place, so a skill can record repo:/url: identity for a
+            # source the manifest previously tracked by path.
+            moved = sources.pop(match_key)
+            existing = sources.get(new_key)
+            if isinstance(existing, dict):
+                moved = {**existing, **moved}
+            sources[new_key] = moved
+            match_key = new_key
+        # A matched legacy entry otherwise keeps its existing key; only new
+        # entries use the portable form, so an in-place update never re-keys a
+        # dict by surprise (migrate handles legacy conversion).
         manifest_key = match_key if match_key is not None else new_key
         entry = sources.get(manifest_key) if isinstance(sources.get(manifest_key), dict) else {}
         entry["content_hash"] = _format_hash(entry.get("content_hash"), current_hash)

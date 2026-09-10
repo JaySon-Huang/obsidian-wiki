@@ -100,38 +100,58 @@ def load_manifest(vault: str) -> dict:
 
 def _newest(a: dict, b: dict) -> dict:
     """Merge two entries for the same file, preferring the newer ingested_at and
-    unioning the pages_created / pages_updated lists."""
+    unioning the pages_created / pages_updated / pages_produced lists."""
     keep = a
     other = b
     if str(b.get("ingested_at", "")) > str(a.get("ingested_at", "")):
         keep, other = b, a
     merged = dict(keep)
-    for field in ("pages_created", "pages_updated"):
+    for field in ("pages_created", "pages_updated", "pages_produced"):
         union = list(dict.fromkeys((other.get(field) or []) + (keep.get(field) or [])))
         if union:
             merged[field] = union
     return merged
 
 
-def cmd_normalize(args: argparse.Namespace) -> int:
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Rewrite legacy absolute keys to the portable key form.
+
+    In-vault keys become vault-relative and `$HOME` keys become `~`-relative.
+    Pseudo-keys and legacy ingest-root-relative keys are preserved untouched.
+    An absolute path with no portable form (outside the vault and `$HOME`) is
+    kept as-is with a warning rather than dropped, so provenance is never lost.
+    """
     m = load_manifest(args.vault)
     sources = m.get("sources", {})
     new_sources: dict = {}
     collisions = 0
     rekeyed = 0
+    non_portable = 0
     for key, entry in sources.items():
-        if not os.path.isabs(key):
-            # Real vaults store some keys relative to the ingest root (e.g.
-            # "-Users-x-github/abc.jsonl" under ~/.claude/projects/). canonical()
-            # would resolve those against the CWD and rewrite them to a bogus
-            # absolute path. normalize only dedups/canonicalizes absolute keys, so
-            # preserve relative keys untouched (safe no-op) and warn.
-            print(f"  WARN   preserving relative key as-is (not canonicalized): {key}")
-            ckey = key
+        portable = False
+        if not _is_file_key(key):
+            ckey = key  # pseudo-key — opaque identity, keep verbatim
+        elif os.path.isabs(key):
+            ckey = stored_key(key, args.vault)
+            if ckey is None:
+                ckey = canonical(key)
+                non_portable += 1
+                print(f"  WARN   no portable form (kept absolute): {key}")
+            else:
+                portable = True
+        elif key.startswith("~") or "$" in key:
+            ckey = stored_key(os.path.expanduser(os.path.expandvars(key)), args.vault) or key
+            portable = ckey != key
         else:
-            ckey = canonical(key)
-            if ckey != key:
-                rekeyed += 1
+            # Relative keys are already vault-relative under contract v2. Legacy
+            # keys relative to an ingest root outside the vault (e.g.
+            # "-Users-x-github/abc.jsonl" under ~/.claude/projects/) also land
+            # here; they are indistinguishable without the file and re-resolving
+            # them against the vault/CWD would corrupt them, so preserve as-is.
+            ckey = key
+
+        if portable and ckey != key:
+            rekeyed += 1
         if ckey in new_sources:
             new_sources[ckey] = _newest(new_sources[ckey], entry)
             collisions += 1
@@ -141,13 +161,14 @@ def cmd_normalize(args: argparse.Namespace) -> int:
 
     print(
         f"sources: {len(sources)} -> {len(new_sources)} "
-        f"({rekeyed} re-keyed, {collisions} collisions merged)"
+        f"({rekeyed} re-keyed, {collisions} collisions merged, "
+        f"{non_portable} kept non-portable)"
     )
     if args.dry_run:
         print("(dry-run — no changes written)")
         return 0
     if collisions == 0 and rekeyed == 0:
-        print("already canonical — nothing to write")
+        print("already portable — nothing to write")
         return 0
     m["sources"] = new_sources
     mp = manifest_path(args.vault)
@@ -257,10 +278,17 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
 
-    n = sub.add_parser("normalize", help="rewrite source keys to canonical absolute paths")
+    mg = sub.add_parser("migrate", help="rewrite legacy absolute keys to the portable form")
+    mg.add_argument("vault", help="path to the Obsidian vault (contains .manifest.json)")
+    mg.add_argument("--dry-run", action="store_true", help="preview without writing")
+    mg.set_defaults(func=cmd_migrate)
+
+    # `normalize` predates the portable-key contract; keep it as an alias so
+    # older skill instructions keep working.
+    n = sub.add_parser("normalize", help="alias for migrate")
     n.add_argument("vault", help="path to the Obsidian vault (contains .manifest.json)")
     n.add_argument("--dry-run", action="store_true", help="preview without writing")
-    n.set_defaults(func=cmd_normalize)
+    n.set_defaults(func=cmd_migrate)
 
     d = sub.add_parser("delta", help="list new/modified sources vs the manifest")
     d.add_argument("vault", help="path to the Obsidian vault")

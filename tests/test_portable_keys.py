@@ -123,6 +123,20 @@ class TestWriteNormalization:
         sources = _load_raw(vault)["sources"]
         assert str(src) in sources
 
+    def test_explicit_key_rekeys_an_existing_path_entry(self, vault, tmp_path):
+        # An explicit key is authoritative even when the manifest already tracked
+        # the source by (absolute) path.
+        src = tmp_path / "checkout"
+        src.mkdir()
+        (src / "a.py").write_text("x = 1")
+        _manifest_path(vault).write_text(
+            json.dumps({"sources": {str(src): {"content_hash": "old"}}}), encoding="utf-8"
+        )
+        update_source(vault, src, key="repo:github.com/o/n")
+        sources = _load_raw(vault)["sources"]
+        assert "repo:github.com/o/n" in sources
+        assert str(src) not in sources
+
 
 class TestMatchingAcrossForms:
     def test_home_relative_key_matches_absolute_query(self, vault, home):
