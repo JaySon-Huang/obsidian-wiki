@@ -379,6 +379,7 @@ def update_source(
     *,
     pages_produced: list[str] | None = None,
     key: str | None = None,
+    source_hint: str | None = None,
 ) -> str:
     """Record the current hash of *source_path* in the manifest. Returns the hash.
 
@@ -394,6 +395,11 @@ def update_source(
     When neither applies, the raw path is kept for backward compatibility and a
     warning is written to stderr, because that entry is not portable across
     machines.
+
+    *source_hint* is optional advisory metadata — a ``~``-relative location for
+    reopening the source on this machine. It is never an identity key; pass it
+    alongside an explicit *key* when the key alone (e.g. ``src:<sha256-8>``) does
+    not say where the file lives. Omitted means any existing hint is preserved.
     """
     # Hash outside the lock — hashing a large source tree can take seconds and
     # nothing else in the manifest depends on it.
@@ -408,7 +414,7 @@ def update_source(
             new_key = str(source_path)
             print(
                 f"warning: {source_path} is outside the vault and $HOME, so it has no "
-                f"portable key; storing the absolute path. Pass key=<repo:|url:|agent:> "
+                f"portable key; storing the absolute path. Pass key=<repo:|url:|agent:|src:> "
                 f"to keep the vault portable across machines.",
                 file=sys.stderr,
             )
@@ -417,7 +423,8 @@ def update_source(
 
     with manifest_lock(vault):
         return _update_source_locked(
-            vault, source_path, new_key, explicit_key, current_hash, now, pages_produced
+            vault, source_path, new_key, explicit_key, current_hash, now,
+            pages_produced, source_hint,
         )
 
 
@@ -429,6 +436,7 @@ def _update_source_locked(
     current_hash: str,
     now: str,
     pages_produced: list[str] | None,
+    source_hint: str | None,
 ) -> str:
     """The manifest read-modify-write half of :func:`update_source`."""
     manifest = _load_raw(vault)
@@ -452,6 +460,8 @@ def _update_source_locked(
         target["last_ingested"] = now
         if pages_produced is not None:
             target["pages_produced"] = pages_produced
+        if source_hint is not None:
+            target["source_hint"] = source_hint
     else:
         if not isinstance(sources, dict):
             sources = {}
@@ -479,6 +489,8 @@ def _update_source_locked(
         entry["last_ingested"] = now
         if pages_produced is not None:
             entry["pages_produced"] = pages_produced
+        if source_hint is not None:
+            entry["source_hint"] = source_hint
         sources[manifest_key] = entry
 
     manifest["sources"] = sources

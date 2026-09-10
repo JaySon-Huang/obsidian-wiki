@@ -163,6 +163,23 @@ class TestWriteNormalization:
         assert "repo:github.com/o/n" in sources
         assert str(src) not in sources
 
+    def test_source_hint_recorded_with_explicit_key(self, vault, tmp_path):
+        src = tmp_path / "mnt" / "a.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("body", encoding="utf-8")
+        update_source(vault, src, key="src:abcdef01", source_hint="~/docs/a.md")
+        entry = _load_raw(vault)["sources"]["src:abcdef01"]
+        assert entry["source_hint"] == "~/docs/a.md"
+
+    def test_source_hint_preserved_when_omitted(self, vault, tmp_path):
+        src = tmp_path / "mnt" / "a.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("body", encoding="utf-8")
+        update_source(vault, src, key="src:abcdef01", source_hint="~/docs/a.md")
+        update_source(vault, src, key="src:abcdef01")  # no hint this time
+        entry = _load_raw(vault)["sources"]["src:abcdef01"]
+        assert entry["source_hint"] == "~/docs/a.md"
+
 
 class TestMatchingAcrossForms:
     def test_home_relative_key_matches_absolute_query(self, vault, home):

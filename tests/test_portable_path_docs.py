@@ -88,6 +88,7 @@ def test_cli_docs_document_the_new_surface() -> None:
     """AGENTS.md requires docs/ to track new CLI surface (repo rule PR-005)."""
     cli = (REPO_ROOT / "docs" / "cli.md").read_text(encoding="utf-8")
     assert "--key" in cli, "docs/cli.md does not document cache-update --key"
+    assert "--source-hint" in cli, "docs/cli.md does not document cache-update --source-hint"
     assert "manifest.py" in cli and "migrate" in cli, (
         "docs/cli.md does not document scripts/manifest.py migrate"
     )

@@ -145,9 +145,9 @@ resolve_key(key, vault):
 
 落点：
 
-- `obsidian_wiki/cache.py` 的 `update_source` / `_update_source_locked`：新条目使用 `stored_key(source_path, vault)`；无显式 `key` 且 `stored_key` 为 `None` 时退回原始路径。`_same_source`、`_missing_on_disk` 增加 `~`/环境变量展开。新增可选 `key=` 参数：**显式 key 是权威的**，即使 manifest 中已有按路径匹配的旧条目，也会把该条目 re-key 到显式 key（读取侧仍双向兼容）。
+- `obsidian_wiki/cache.py` 的 `update_source` / `_update_source_locked`：新条目使用 `stored_key(source_path, vault)`；无显式 `key` 且 `stored_key` 为 `None` 时退回原始路径。`_same_source`、`_missing_on_disk` 增加 `~`/环境变量展开。新增可选 `key=` 参数：**显式 key 是权威的**，即使 manifest 中已有按路径匹配的旧条目，也会把该条目 re-key 到显式 key（读取侧仍双向兼容）。另有可选 `source_hint=` 参数，把 `~` 相对位置提示写进条目；它是 advisory 元数据、非身份标识，未传时保留既有值。
 - `scripts/manifest.py`：新增 `resolve_key` / `stored_key` 供解析与迁移使用；`cmd_delta` 用 `resolve_key` 构建已知源映射，使 vault-relative / home-relative key 能被扫描到的绝对路径直接命中。
-- `obsidian-wiki cache-update` CLI 透传调用方路径，并新增 `--key`：skill 可以继续传绝对路径（落盘被归一为相对形态），对无可移植路径的源则显式传伪 key。这让文档改动与代码改动可以分批上线而不互相阻塞。
+- `obsidian-wiki cache-update` CLI 透传调用方路径，并新增 `--key` 与 `--source-hint`：skill 可以继续传绝对路径（落盘被归一为相对形态），对无可移植路径的源则显式传伪 key，`src:<sha256-8>` 这类不自带位置的 key 可再配 `--source-hint ~/...`。这让文档改动与代码改动可以分批上线而不互相阻塞。
 
 ### 5) 读取侧兼容与降级
 
@@ -229,7 +229,7 @@ resolve_key(key, vault):
 
 - **解析单测**：`resolve_key` / `stored_key` 覆盖 vault 内、`$HOME` 下、pseudo-key、绝对路径四类输入，以及 `~` 与环境变量展开。
 - **匹配单测**：`_same_source` 在"旧绝对 key vs 新绝对查询"、"vault-relative key vs 绝对查询"、"home-relative key vs 绝对查询"下均命中；pseudo-key 不触发 `missing`；跨机缺失的机器本地 key 归入 `unavailable` 而非 `missing`。
-- **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径**且 stderr 必须出现 `no portable key` 告警**；vault 内/`$HOME` 下/显式 `key=` 三种情形不得告警。由 `tests/test_portable_keys.py` 与 `tests/test_cache.py::TestCacheCLI` 覆盖。
+- **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径**且 stderr 必须出现 `no portable key` 告警**；vault 内/`$HOME` 下/显式 `key=` 三种情形不得告警；`source_hint=` 会写入条目，未传时保留既有值。由 `tests/test_portable_keys.py` 与 `tests/test_cache.py::TestCacheCLI` 覆盖。
 - **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价；写入门槛按新旧映射是否相同判定，含 `..` 的非规范绝对 key 会被规范化并落盘，且不得打印 `already portable`。
 - **一致性测试**：`tests/test_manifest_portable_keys.py::ResolveStoreParityTest` 对 `cache.py` 与 `manifest.py` 两份 `resolve_key` / `stored_key` 实现跑同一组输入矩阵，断言结果一致——两份实现因 `manifest.py` 需独立运行而无法共用代码，该测试是防止单边漂移的护栏。
 - **文档契约测试**：新增 `tests/test_portable_path_docs.py`，断言 `llm-wiki` 契约段存在、相关 skill 引用契约，且非 `references/` 的 skill 文档中不出现 `"/absolute/"`、`"source_cwd":`、`source_cwd=`、`"path": "/`、`"source_path": "/`、`sources: ["/` 等存储型绝对路径字面量。`references/` 下的原始数据格式文档（如会话 `cwd` 字段）豁免。同时断言 `docs/cli.md` 记录了 `--key` 与 `manifest.py migrate`。
@@ -262,7 +262,7 @@ resolve_key(key, vault):
 
 另有一处测试修正：`test_update_appends_new_list_entry` 的断言由绝对路径改为 vault 相对 key `_raw/foo.md`——那条断言正是旧契约的体现。
 
-**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。另有一处文档补漏（d）：`docs/cli.md` 之前漏写第四种伪 key 命名空间 `src:<sha256-8>`，已补齐，并将文档契约测试加强为强制 `repo:`/`url:`/`agent:`/`src:` 四个命名空间同时出现在 `docs/cli.md` 与 `llm-wiki` 契约中。
+**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。另有一处文档补漏（d）：`docs/cli.md` 之前漏写第四种伪 key 命名空间 `src:<sha256-8>`，已补齐，并将文档契约测试加强为强制 `repo:`/`url:`/`agent:`/`src:` 四个命名空间同时出现在 `docs/cli.md` 与 `llm-wiki` 契约中。后续又发现（e）：文档描述了 `source_hint`，但 CLI 与库都没有写入途径；选择补齐能力而非弱化文档——新增 `source_hint=` 形参与 `cache-update --source-hint`，使该 advisory 字段可由并行路径写入，未传时保留既有值。
 
 ---
 

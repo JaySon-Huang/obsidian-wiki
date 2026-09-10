@@ -129,6 +129,13 @@ def test_update_appends_new_list_entry(vault, raw_file):
     assert {e["path"] for e in sources} == {"_raw/other.md", "_raw/foo.md"}
 
 
+def test_source_hint_recorded_for_list_shape(vault, raw_file):
+    _write_list_manifest(vault, [{"path": "_raw/foo.md", "content_hash": "sha256:z"}])
+    update_source(vault, raw_file, source_hint="~/notes/foo.md")
+    entry = _load_raw(vault)["sources"][0]
+    assert entry["source_hint"] == "~/notes/foo.md"
+
+
 def test_top_level_keys_preserved(vault, raw_file):
     _manifest_path(vault).write_text(
         json.dumps({"version": 1, "stats": {"total_sources_ingested": 5}, "sources": []}),

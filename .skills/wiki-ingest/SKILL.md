@@ -475,7 +475,7 @@ The page's `sources:` frontmatter uses the same key form as the manifest entry, 
 
 Also update `stats.total_sources_ingested` and `stats.total_pages`.
 
-**In parallel runs** (batch fan-out, or while the Docker server is writing the same vault), record sources with `obsidian-wiki cache-update` rather than hand-editing `.manifest.json`. That command takes an advisory lock, writes atomically, and normalises the key to the portable form; concurrent hand edits are a plain read-modify-write and silently drop whichever entry lands second. For a source with no portable path form, pass its pseudo-key explicitly: `obsidian-wiki cache-update <vault> <path> --key repo:github.com/owner/name`.
+**In parallel runs** (batch fan-out, or while the Docker server is writing the same vault), record sources with `obsidian-wiki cache-update` rather than hand-editing `.manifest.json`. That command takes an advisory lock, writes atomically, and normalises the key to the portable form; concurrent hand edits are a plain read-modify-write and silently drop whichever entry lands second. For a source with no portable path form, pass its pseudo-key explicitly: `obsidian-wiki cache-update <vault> <path> --key repo:github.com/owner/name` — and add `--source-hint ~/path/to/file` when the key does not reveal where the file lives (e.g. a `src:<sha256-8>` key).
 
 If the manifest doesn't exist yet, create it with `version: 1`.
 

@@ -167,7 +167,7 @@ Rules:
 
 1. **Never store a bare absolute path.** Convert before writing, not after.
 2. **Normalize before comparing.** Expand `~` and environment variables, resolve vault-relative keys against the vault root, and treat `scheme:`/`://` pseudo-keys as opaque identifiers. Never compare raw strings without normalizing first.
-3. **`source_hint` is advisory only.** It may carry a `~`-relative location for reopening a file on this machine. It is never an identity key and must not be required for correctness.
+3. **`source_hint` is advisory only.** It may carry a `~`-relative location for reopening a file on this machine; set it with `obsidian-wiki cache-update --source-hint <path>` when recording the entry. It is never an identity key and must not be required for correctness.
 4. **Identity survives path changes.** The same logical source keeps the same key across machines; only `source_hint` may differ per machine.
 
 Reading is backward compatible: an existing manifest full of absolute keys keeps working, and `scripts/manifest.py migrate <vault> --dry-run` converts it to contract v2 (merging collisions, keeping the newest `ingested_at`). New writes go through the same normalization, so a skill may pass an absolute path to `obsidian-wiki cache-update` and still have a portable key land in the manifest. For out-of-vault sources that cannot be vault-relative or home-relative, pass an explicit pseudo-key — do not let the tool fall back to an absolute path.

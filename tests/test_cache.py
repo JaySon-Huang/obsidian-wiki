@@ -283,6 +283,14 @@ class TestCacheCLI:
         assert "no portable key" not in proc.stderr
         assert "repo:o/n" in _load_manifest(vault)
 
+    def test_cache_update_records_source_hint(self, vault, src_file):
+        proc = self._run("cache-update", str(vault), str(src_file),
+                         "--key", "src:abcdef01", "--source-hint", "~/docs/a.md")
+        assert proc.returncode == 0
+        data = json.loads(proc.stdout)
+        assert data["source_hint"] == "~/docs/a.md"
+        assert _load_manifest(vault)["src:abcdef01"]["source_hint"] == "~/docs/a.md"
+
 
 class TestManifestLock:
     """Concurrent writers must serialize instead of clobbering the manifest."""
