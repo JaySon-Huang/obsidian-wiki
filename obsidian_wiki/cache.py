@@ -49,7 +49,8 @@ class CheckResult(TypedDict):
     new: list[str]
     modified: list[str]
     unchanged: list[str]
-    missing: list[str]   # in manifest but file no longer on disk
+    missing: list[str]   # vault-local source in manifest but no longer on disk
+    unavailable: list[str]  # machine-local source absent here (e.g. synced from another host)
 
 
 def _manifest_path(vault: Path) -> Path:
@@ -280,6 +281,24 @@ def _missing_on_disk(key: str | None, vault: Path) -> bool:
     return not path.exists()
 
 
+def _is_vault_local(key: str | None, vault: Path) -> bool:
+    """True if a file key resolves inside the vault.
+
+    Vault-local sources travel with the vault, so their absence is a real loss
+    (``missing``). A machine-local key (home-relative or absolute) can simply
+    not exist on the machine reading a synced vault, so it is reported under
+    ``unavailable`` instead of ``missing``.
+    """
+    path = resolve_key(key, vault)
+    if path is None:
+        return False
+    try:
+        Path(os.path.abspath(str(path))).relative_to(Path(os.path.abspath(str(vault))))
+    except ValueError:
+        return False
+    return True
+
+
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
     """Return the hex SHA-256 digest of *path* without loading it all into RAM."""
     h = hashlib.sha256()
@@ -316,7 +335,9 @@ def check_sources(vault: Path, source_paths: list[Path]) -> CheckResult:
     Handles both manifest shapes and compares hashes prefix-insensitively.
     """
     entries = list(_iter_entries(_load_manifest(vault)))
-    result: CheckResult = {"new": [], "modified": [], "unchanged": [], "missing": []}
+    result: CheckResult = {
+        "new": [], "modified": [], "unchanged": [], "missing": [], "unavailable": []
+    }
 
     matched: set[int] = set()
     for path in source_paths:
@@ -346,7 +367,8 @@ def check_sources(vault: Path, source_paths: list[Path]) -> CheckResult:
         if any(_same_source(stored_key, p, vault) for p in source_paths):
             continue
         if _missing_on_disk(stored_key, vault):
-            result["missing"].append(stored_key)
+            bucket = "missing" if _is_vault_local(stored_key, vault) else "unavailable"
+            result[bucket].append(stored_key)
 
     return result
 

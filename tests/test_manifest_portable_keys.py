@@ -17,6 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import manifest  # noqa: E402
+from obsidian_wiki.cache import resolve_key as cache_resolve_key  # noqa: E402
+from obsidian_wiki.cache import stored_key as cache_stored_key  # noqa: E402
 
 
 class ResolveAndStoreKeyTest(unittest.TestCase):
@@ -154,6 +156,17 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual(entry["ingested_at"], "2026-02-01")
         self.assertEqual(sorted(entry["pages_produced"]), ["a.md", "b.md"])
 
+    def test_non_portable_unnormalized_key_is_rewritten(self) -> None:
+        # A non-portable absolute key with ".." is still normalized in spelling;
+        # the write gate must not skip it while claiming "already portable".
+        messy = str(self.root / "mnt" / "sub" / ".." / "a.md")
+        canon = str(self.root / "mnt" / "a.md")
+        self._write({messy: {"ingested_at": "2020-01-01"}})
+        out = self._run()
+        self.assertNotIn("already portable", out)
+        self.assertIn("no portable form", out)
+        self.assertEqual(self._keys(), [canon])
+
     def test_dry_run_writes_nothing(self) -> None:
         (self.vault / "Raw").mkdir()
         src = self.vault / "Raw" / "x.pdf"
@@ -216,6 +229,64 @@ class DeltaResolvesPortableKeysTest(unittest.TestCase):
             )
         self.assertEqual(rc, 0)
         self.assertIn("# 0 new, 0 modified, 1 known", buf.getvalue())
+
+
+class ResolveStoreParityTest(unittest.TestCase):
+    """cache.py and manifest.py each implement the key helpers; keep them equal.
+
+    They cannot share code — manifest.py is a standalone stdlib script that ships
+    without the package — so this test is the guard that a change to one side
+    cannot silently diverge from the other.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / "vault"
+        self.vault.mkdir()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self._old_home = os.environ.get("HOME")
+        os.environ["HOME"] = str(self.home)
+        os.environ["WIKI_PARITY_ROOT"] = str(self.root)
+
+    def tearDown(self) -> None:
+        os.environ.pop("WIKI_PARITY_ROOT", None)
+        if self._old_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self._old_home
+        self.tmp.cleanup()
+
+    def test_resolve_key_agrees(self) -> None:
+        cases = [
+            "Raw/x.pdf",
+            "~/.claude/x.jsonl",
+            "$WIKI_PARITY_ROOT/abs/x.md",
+            str(self.root / "outside" / "y.md"),
+            "repo:github.com/o/n",
+            "url:https://example.com/x",
+            "agent:claude/1",
+            "src:abcdef01",
+        ]
+        for key in cases:
+            got_cache = cache_resolve_key(key, self.vault)
+            got_manifest = manifest.resolve_key(key, str(self.vault))
+            expected = str(got_cache) if got_cache is not None else None
+            self.assertEqual(expected, got_manifest, f"resolve_key disagrees on {key!r}")
+
+    def test_stored_key_agrees(self) -> None:
+        paths = [
+            self.vault / "Raw" / "x.pdf",
+            self.home / ".claude" / "x.jsonl",
+            self.root / "outside" / "y.md",
+        ]
+        for path in paths:
+            self.assertEqual(
+                cache_stored_key(path, self.vault),
+                manifest.stored_key(str(path), str(self.vault)),
+                f"stored_key disagrees on {path}",
+            )
 
 
 if __name__ == "__main__":

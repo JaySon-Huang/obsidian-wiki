@@ -123,7 +123,9 @@ class TestCheckSources:
 
     def test_empty_source_list(self, vault):
         result = check_sources(vault, [])
-        assert result == {"new": [], "modified": [], "unchanged": [], "missing": []}
+        assert result == {
+            "new": [], "modified": [], "unchanged": [], "missing": [], "unavailable": []
+        }
 
     def test_multiple_sources(self, vault, src_file, src_dir):
         update_source(vault, src_file)

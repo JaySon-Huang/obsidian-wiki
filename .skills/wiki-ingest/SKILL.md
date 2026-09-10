@@ -54,12 +54,13 @@ Only ingest sources that are **new or modified** since last ingest. Use the buil
 obsidian-wiki cache-check "$OBSIDIAN_VAULT_PATH" <source1> [source2 ...]
 ```
 
-Output: `{"new": [...], "modified": [...], "unchanged": [...], "missing": [...]}`.
+Output: `{"new": [...], "modified": [...], "unchanged": [...], "missing": [...], "unavailable": [...]}`.
 
 - `new` → ingest these
 - `modified` → re-ingest these (content changed since last run)
 - `unchanged` → skip entirely — hash matches, content is identical
-- `missing` → in manifest but no longer on disk; skip and optionally clean up
+- `missing` → vault-local source in the manifest that is no longer on disk; skip and optionally clean up
+- `unavailable` → machine-local source (home-relative or absolute key) that is absent on this machine, e.g. a synced entry from another host; skip it, do **not** treat it as missing or clean it up
 
 After ingesting each source, record its hash:
 

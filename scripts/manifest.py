@@ -167,7 +167,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if args.dry_run:
         print("(dry-run — no changes written)")
         return 0
-    if collisions == 0 and rekeyed == 0:
+    if new_sources == sources:
         print("already portable — nothing to write")
         return 0
     m["sources"] = new_sources

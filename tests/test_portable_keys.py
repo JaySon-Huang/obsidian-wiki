@@ -192,3 +192,21 @@ class TestMatchingAcrossForms:
         )
         result = check_sources(vault, [])
         assert result["missing"] == []
+
+    def test_cross_machine_home_key_is_unavailable_not_missing(self, vault, home):
+        # The source lives on another machine: its home-relative key resolves to
+        # a path that does not exist here. That must not be reported as `missing`
+        # (a real loss of a vault-local source) but as `unavailable`.
+        _manifest_path(vault).write_text(
+            json.dumps(
+                {
+                    "sources": {
+                        "~/.claude/sessions/other-host.jsonl": {"content_hash": "x", "last_ingested": "2026-01-01"}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = check_sources(vault, [])
+        assert result["missing"] == []
+        assert "~/.claude/sessions/other-host.jsonl" in result["unavailable"]

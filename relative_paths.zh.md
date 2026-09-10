@@ -157,7 +157,8 @@ resolve_key(key, vault):
 | manifest 中是 vault-relative key，调用方传绝对路径 | `resolve_key` 归一后命中（现状已支持） |
 | manifest 中是 home-relative key，调用方传绝对路径 | 展开 `~` 后命中（本设计新增） |
 | pseudo-key | 不参与文件存在性检查；由内容 hash 或显式映射参与增量判断 |
-| 本机不存在该源（跨机同步的另一台机器） | 不误报 missing；若 delta 扫描不到则视为"本机无此源"，不触发重摄取 |
+| 本机不存在该源（跨机同步的另一台机器） | 不误报 `missing`：机器本地 key（home-relative / 绝对）缺文件时归入独立的 `unavailable` 桶；`missing` 只保留 vault 本地源的真实缺失。若 delta 扫描不到则视为"本机无此源"，不触发重摄取 |
+| `cache-check` 输出 | 新增 `unavailable` 字段（机器本地但本机不存在）；`missing` 语义收窄为 vault 本地源缺失 |
 | 遗留 ingest-root 相对 key（如 `-Users-x/abc.jsonl`） | 按原字符串保留，不报错、不改写；`_match_relative` basename 后缀兜底继续兼容 |
 | 调用方显式传 `--key` | re-key 已按路径匹配的条目；读取侧对旧 key 仍兼容 |
 | `manifest.py delta` 标准输出 | 仍输出绝对路径——这是临时输出，调用方用它打开文件，不是存盘 key |
@@ -227,10 +228,11 @@ resolve_key(key, vault):
 ## Validation Strategy
 
 - **解析单测**：`resolve_key` / `stored_key` 覆盖 vault 内、`$HOME` 下、pseudo-key、绝对路径四类输入，以及 `~` 与环境变量展开。
-- **匹配单测**：`_same_source` 在"旧绝对 key vs 新绝对查询"、"vault-relative key vs 绝对查询"、"home-relative key vs 绝对查询"下均命中；pseudo-key 不触发 `missing`。
+- **匹配单测**：`_same_source` 在"旧绝对 key vs 新绝对查询"、"vault-relative key vs 绝对查询"、"home-relative key vs 绝对查询"下均命中；pseudo-key 不触发 `missing`；跨机缺失的机器本地 key 归入 `unavailable` 而非 `missing`。
 - **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径**且 stderr 必须出现 `no portable key` 告警**；vault 内/`$HOME` 下/显式 `key=` 三种情形不得告警。由 `tests/test_portable_keys.py` 与 `tests/test_cache.py::TestCacheCLI` 覆盖。
-- **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价。
-- **文档契约测试**：新增 `tests/test_portable_path_docs.py`，断言 `llm-wiki` 契约段存在、相关 skill 引用契约，且非 `references/` 的 skill 文档中不出现 `"/absolute/"`、`"source_cwd":`、`source_cwd=`、`"path": "/`、`"source_path": "/`、`sources: ["/` 等存储型绝对路径字面量。`references/` 下的原始数据格式文档（如会话 `cwd` 字段）豁免。
+- **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价；写入门槛按新旧映射是否相同判定，含 `..` 的非规范绝对 key 会被规范化并落盘，且不得打印 `already portable`。
+- **一致性测试**：`tests/test_manifest_portable_keys.py::ResolveStoreParityTest` 对 `cache.py` 与 `manifest.py` 两份 `resolve_key` / `stored_key` 实现跑同一组输入矩阵，断言结果一致——两份实现因 `manifest.py` 需独立运行而无法共用代码，该测试是防止单边漂移的护栏。
+- **文档契约测试**：新增 `tests/test_portable_path_docs.py`，断言 `llm-wiki` 契约段存在、相关 skill 引用契约，且非 `references/` 的 skill 文档中不出现 `"/absolute/"`、`"source_cwd":`、`source_cwd=`、`"path": "/`、`"source_path": "/`、`sources: ["/` 等存储型绝对路径字面量。`references/` 下的原始数据格式文档（如会话 `cwd` 字段）豁免。同时断言 `docs/cli.md` 记录了 `--key` 与 `manifest.py migrate`。
 - **回归**：`tests/test_cache.py`、`tests/test_cache_manifest_shapes.py`、`tests/test_manifest_delta.py` 必须继续通过；新增用例不得改变既有跳过/修改判定。
 - **端到端烟雾**：在含绝对 key 的旧 vault 上依次执行 `cache-check`（应正确识别 unchanged）→ `update_source`（应写入相对 key）→ `migrate`（可移植 key 应无残留绝对路径；不可移植的源按 C1 例外保留）。
 
@@ -259,6 +261,8 @@ resolve_key(key, vault):
 5. **`_newest` 额外合并 `pages_produced`**（设计未提）。原 `_newest` 只并 `pages_created` / `pages_updated`，而 cache 时代使用 `pages_produced`，迁移碰撞会静默丢失 provenance。现在三个列表字段都合并。
 
 另有一处测试修正：`test_update_appends_new_list_entry` 的断言由绝对路径改为 vault 相对 key `_raw/foo.md`——那条断言正是旧契约的体现。
+
+**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。
 
 ---
 
