@@ -1,0 +1,154 @@
+"""Unit tests for the portable source key contract (v2).
+
+The contract is defined in ``.skills/llm-wiki/SKILL.md``: a stored key is
+vault-relative, home-relative (``~``), or a namespaced pseudo-key — never a bare
+machine absolute path. These tests pin the resolution and normalization rules
+that back it.
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from obsidian_wiki.cache import (
+    check_sources,
+    resolve_key,
+    stored_key,
+    update_source,
+    _load_raw,
+    _manifest_path,
+    _same_source,
+)
+
+
+@pytest.fixture
+def vault(tmp_path):
+    v = tmp_path / "vault"
+    v.mkdir()
+    return v
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """A fake $HOME so home-relative behavior is testable without touching real files."""
+    h = tmp_path / "home"
+    h.mkdir()
+    monkeypatch.setenv("HOME", str(h))
+    return h
+
+
+class TestResolveKey:
+    def test_vault_relative_resolves_against_vault(self, vault):
+        assert resolve_key("Raw/x.pdf", vault) == vault / "Raw" / "x.pdf"
+
+    def test_home_relative_expands(self, vault, home):
+        assert resolve_key("~/.claude/x.jsonl", vault) == home / ".claude" / "x.jsonl"
+
+    def test_env_var_expands(self, vault, monkeypatch):
+        monkeypatch.setenv("WIKI_TEST_ROOT", "/srv/docs")
+        assert resolve_key("$WIKI_TEST_ROOT/a.md", vault) == vault.__class__("/srv/docs/a.md")
+
+    def test_absolute_used_as_is(self, vault, tmp_path):
+        abs_path = tmp_path / "outside" / "a.md"
+        assert resolve_key(str(abs_path), vault) == abs_path
+
+    @pytest.mark.parametrize(
+        "key",
+        ["repo:github.com/o/n", "url:https://example.com/x", "agent:claude/abc", "src:1f2a9c3d"],
+    )
+    def test_pseudo_keys_are_not_file_paths(self, key, vault):
+        assert resolve_key(key, vault) is None
+
+    def test_empty_and_none(self, vault):
+        assert resolve_key(None, vault) is None
+        assert resolve_key("", vault) is None
+
+
+class TestStoredKey:
+    def test_in_vault_is_vault_relative(self, vault):
+        src = vault / "Raw" / "database" / "x.pdf"
+        assert stored_key(src, vault) == "Raw/database/x.pdf"
+
+    def test_under_home_is_home_relative(self, vault, home):
+        src = home / ".claude" / "projects" / "abc.jsonl"
+        assert stored_key(src, vault) == "~/.claude/projects/abc.jsonl"
+
+    def test_vault_wins_when_vault_is_under_home(self, home, monkeypatch):
+        # A vault inside $HOME must produce vault-relative, not home-relative.
+        v = home / "Knowledge"
+        src = v / "Clippings" / "a.md"
+        assert stored_key(src, v) == "Clippings/a.md"
+
+    def test_outside_both_is_not_portable(self, vault, tmp_path):
+        assert stored_key(tmp_path / "elsewhere" / "a.md", vault) is None
+
+
+class TestWriteNormalization:
+    def test_new_in_vault_source_stored_vault_relative(self, vault):
+        src = vault / "_raw" / "articles" / "foo.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("body", encoding="utf-8")
+        update_source(vault, src)
+        sources = _load_raw(vault)["sources"]
+        assert "_raw/articles/foo.md" in sources
+        assert str(src) not in sources
+
+    def test_new_home_source_stored_home_relative(self, vault, home):
+        src = home / ".claude" / "sessions" / "abc.jsonl"
+        src.parent.mkdir(parents=True)
+        src.write_text("{}\n", encoding="utf-8")
+        update_source(vault, src)
+        sources = _load_raw(vault)["sources"]
+        assert "~/.claude/sessions/abc.jsonl" in sources
+
+    def test_explicit_pseudo_key_used_verbatim(self, vault, tmp_path):
+        src = tmp_path / "checkout"  # outside vault and $HOME
+        src.mkdir()
+        (src / "a.py").write_text("x = 1")
+        update_source(vault, src, key="repo:github.com/o/n")
+        sources = _load_raw(vault)["sources"]
+        assert "repo:github.com/o/n" in sources
+
+    def test_updating_legacy_absolute_entry_keeps_its_key(self, vault):
+        # Backward compatibility: an existing absolute key is matched and updated
+        # in place, not silently re-keyed.
+        src = vault / "_raw" / "foo.md"
+        src.parent.mkdir(parents=True)
+        src.write_text("body", encoding="utf-8")
+        _manifest_path(vault).write_text(
+            json.dumps({"sources": {str(src): {"content_hash": "old"}}}), encoding="utf-8"
+        )
+        update_source(vault, src)
+        sources = _load_raw(vault)["sources"]
+        assert str(src) in sources
+
+
+class TestMatchingAcrossForms:
+    def test_home_relative_key_matches_absolute_query(self, vault, home):
+        stored = "~/.claude/sessions/abc.jsonl"
+        query = home / ".claude" / "sessions" / "abc.jsonl"
+        assert _same_source(stored, query, vault)
+
+    def test_vault_relative_key_matches_absolute_query(self, vault):
+        assert _same_source("_raw/foo.md", vault / "_raw" / "foo.md", vault)
+
+    def test_pseudo_key_only_matches_exactly(self, vault, tmp_path):
+        assert _same_source("repo:o/n", tmp_path / "x", vault) is False
+
+    def test_home_relative_key_not_falsely_missing(self, vault, home):
+        src = home / ".claude" / "sessions" / "abc.jsonl"
+        src.parent.mkdir(parents=True)
+        src.write_text("{}\n", encoding="utf-8")
+        _manifest_path(vault).write_text(
+            json.dumps(
+                {
+                    "sources": {
+                        "~/.claude/sessions/abc.jsonl": {"content_hash": "x", "last_ingested": "2026-01-01"}
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = check_sources(vault, [])
+        assert result["missing"] == []

@@ -5,13 +5,17 @@ Pure stdlib, no dependencies. Optional accelerator for the ingest skills: the
 markdown instructions still work without it, but this makes the manifest steps
 deterministic and testable.
 
-Source keys in `.manifest.json` are stored in a single canonical form:
-**absolute paths with `~` and environment variables expanded.** This prevents
-the same file being tracked under both `~/.claude/...` and `/Users/me/.claude/...`,
-which otherwise causes silent re-ingestion in append mode (see issues #86/#88).
+Source keys in `.manifest.json` follow the portable key contract (see
+`.skills/llm-wiki/SKILL.md`): vault-relative for in-vault sources
+(`Raw/x.pdf`), home-relative for sources under `$HOME` (`~/.claude/...`), or a
+namespaced pseudo-key (`repo:`/`url:`/`agent:`/`src:`) for sources with no
+filesystem representation in either form. Bare machine absolute paths are legacy
+and still read for backward compatibility; `migrate` rewrites them.
 
 Usage:
-  # Rewrite source keys to canonical absolute paths, merging any collisions.
+  # Rewrite legacy absolute keys to the portable form, merging collisions.
+  python3 scripts/manifest.py migrate <vault_path> [--dry-run]
+  # Alias kept for older instructions; behaves like migrate.
   python3 scripts/manifest.py normalize <vault_path> [--dry-run]
 
   # List new/modified sources under a glob that aren't in the manifest yet.
@@ -24,12 +28,62 @@ import argparse
 import glob as globmod
 import json
 import os
+import re
 import sys
+from pathlib import Path
 
 
 def canonical(path: str) -> str:
-    """Single canonical key form: expand ~ and env vars, make absolute."""
+    """Absolute form with `~` and env vars expanded (used for path resolution)."""
     return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+
+
+# Matches "sha256:", "https://", "repo:..." — a scheme prefix, not a file path.
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:[^\\/]")
+
+
+def _is_file_key(key: str | None) -> bool:
+    """True if *key* looks like a filesystem path rather than a URL/pseudo-key."""
+    return bool(key) and "://" not in key and not _SCHEME_RE.match(key)
+
+
+def _expand_key(key: str) -> str:
+    """Expand ``~``/env vars, but only when the key actually uses them."""
+    if key.startswith("~") or "$" in key:
+        return os.path.expandvars(os.path.expanduser(key))
+    return key
+
+
+def resolve_key(key: str | None, vault: str) -> str | None:
+    """Normalize a manifest key to an absolute path, or ``None`` for pseudo-keys.
+
+    Order: pseudo-key -> None; ``~``/env -> expand; absolute -> as-is; else
+    resolve against the vault root. Mirrors ``obsidian_wiki.cache.resolve_key``.
+    """
+    if not _is_file_key(key):
+        return None
+    path = Path(_expand_key(key))
+    return str(path if path.is_absolute() else (Path(vault) / path))
+
+
+def stored_key(path: str, vault: str) -> str | None:
+    """Portable key for *path*: vault-relative, ``~``-relative, or ``None``.
+
+    ``None`` means the path has no portable representation and the caller must
+    supply an explicit pseudo-key instead of letting an absolute path be stored.
+    """
+    p = Path(canonical(path))
+    vault_root = Path(canonical(vault))
+    home_root = Path(os.path.expanduser("~"))
+    for root, prefix in ((vault_root, ""), (home_root, "~/")):
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if rel == Path("."):
+            return None
+        return prefix + rel.as_posix()
+    return None
 
 
 def manifest_path(vault: str) -> str:
@@ -151,7 +205,14 @@ def _match_relative(path: str, index: dict[str, list[tuple[str, dict]]]) -> dict
 def cmd_delta(args: argparse.Namespace) -> int:
     m = load_manifest(args.vault)
     sources = m.get("sources", {})
-    known = {canonical(k): v for k, v in sources.items()}
+    # Resolve every stored key to an absolute path so vault-relative and
+    # home-relative keys match a scanned absolute path directly. Pseudo-keys
+    # have no path form and are matched only on the raw string (they never equal
+    # a scanned path, but keeping them preserves the "known" count).
+    known: dict[str, dict] = {}
+    for k, v in sources.items():
+        resolved = resolve_key(k, canonical(args.vault))
+        known[resolved if resolved is not None else k] = v
     rel_index = _relative_key_index(sources)
     skips = _skip_patterns(args.skip)
 

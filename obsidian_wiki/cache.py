@@ -201,33 +201,82 @@ def _is_file_key(key: str | None) -> bool:
     return bool(key) and "://" not in key and not _SCHEME_RE.match(key)
 
 
-def _same_source(stored_key: str | None, query: Path, vault: Path) -> bool:
+def _expand_key(key: str) -> str:
+    """Expand ``~`` and environment variables, but only when the key uses them.
+
+    A plain vault-relative key like ``Raw/x.pdf`` must survive untouched, so the
+    expansion is gated rather than applied unconditionally.
+    """
+    if key.startswith("~") or "$" in key:
+        return os.path.expandvars(os.path.expanduser(key))
+    return key
+
+
+def resolve_key(key: str | None, vault: Path) -> Path | None:
+    """Normalize a manifest key to an absolute path, or ``None`` for non-file keys.
+
+    Resolution order (the source key contract v2, see ``llm-wiki/SKILL.md``):
+
+    1. pseudo-key (``scheme:`` / ``://``) -> ``None`` — an opaque identifier, not
+       a filesystem location;
+    2. ``~``- or env-var-bearing key -> expand;
+    3. absolute path -> use as-is (legacy compatibility);
+    4. anything else -> resolve against the vault root.
+    """
+    if not _is_file_key(key):
+        return None
+    path = Path(_expand_key(key))
+    return path if path.is_absolute() else (vault / path)
+
+
+def stored_key(path: Path, vault: Path) -> str | None:
+    """Return the portable manifest key for *path*, or ``None`` if not portable.
+
+    In-vault sources become vault-relative (``Raw/x.pdf``); sources under
+    ``$HOME`` become home-relative (``~/.claude/...``); anything else has no
+    machine-portable representation and needs an explicit pseudo-key from the
+    caller (``repo:``, ``url:``, ``agent:``, ``src:``).
+    """
+    p = Path(os.path.abspath(_expand_key(str(path))))
+    vault_root = Path(os.path.abspath(_expand_key(str(vault))))
+    home_root = Path(os.path.expanduser("~"))
+    for root, prefix in ((vault_root, ""), (home_root, "~/")):
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if rel == Path("."):
+            return None
+        return prefix + rel.as_posix()
+    return None
+
+
+def _same_source(stored_key_value: str | None, query: Path, vault: Path) -> bool:
     """True if a manifest key refers to the same source as *query*.
 
-    Matches on the raw string first (covers URLs and pseudo-keys), then on the
-    resolved absolute form (relative keys resolve against the vault root), so a
-    caller-supplied absolute path matches a manifest's vault-relative key.
+    Matches on the raw string first (covers pseudo-keys), then on the resolved
+    absolute form so an absolute query matches a vault-relative or home-relative
+    stored key.
     """
-    if not stored_key:
+    if not stored_key_value:
         return False
-    if str(query) == stored_key:
+    if str(query) == stored_key_value:
         return True
-    if not _is_file_key(stored_key):
+    stored_path = resolve_key(stored_key_value, vault)
+    if stored_path is None:
         return False
-    k = Path(stored_key)
-    k_abs = k if k.is_absolute() else (vault / k)
     try:
-        return k_abs.resolve() == query.resolve()
+        return stored_path.resolve() == query.resolve()
     except OSError:
         return False
 
 
 def _missing_on_disk(key: str | None, vault: Path) -> bool:
     """True if a filesystem-style manifest key has no file on disk."""
-    if not _is_file_key(key):
+    path = resolve_key(key, vault)
+    if path is None:
         return False
-    resolved = Path(key) if os.path.isabs(key) else (vault / key)
-    return not resolved.exists()
+    return not path.exists()
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
@@ -306,27 +355,37 @@ def update_source(
     source_path: Path,
     *,
     pages_produced: list[str] | None = None,
+    key: str | None = None,
 ) -> str:
     """Record the current hash of *source_path* in the manifest. Returns the hash.
 
     Edits the manifest in place: matches an existing entry across path forms and
     updates it, otherwise appends a new one — preserving the manifest's shape
     (dict or list), duplicate-path entries, and any skill-written fields.
+
+    The stored key is normalized to the portable form (vault-relative for
+    in-vault sources, ``~``-relative under ``$HOME``) so a synced vault never
+    accumulates machine absolute paths. Pass *key* explicitly for sources that
+    have no filesystem representation in either form — a pseudo-key such as
+    ``repo:github.com/owner/name``, ``url:https://...``, or ``agent:claude/<id>``.
+    When neither applies, the raw path is kept for backward compatibility.
     """
     # Hash outside the lock — hashing a large source tree can take seconds and
     # nothing else in the manifest depends on it.
     current_hash = compute_hash(source_path)
     now = datetime.now(timezone.utc).isoformat()
+    new_key = key if key is not None else (stored_key(source_path, vault) or str(source_path))
 
     with manifest_lock(vault):
         return _update_source_locked(
-            vault, source_path, current_hash, now, pages_produced
+            vault, source_path, new_key, current_hash, now, pages_produced
         )
 
 
 def _update_source_locked(
     vault: Path,
     source_path: Path,
+    new_key: str,
     current_hash: str,
     now: str,
     pages_produced: list[str] | None,
@@ -344,7 +403,7 @@ def _update_source_locked(
                 target = e
                 break
         if target is None:
-            target = {"path": str(source_path)}
+            target = {"path": new_key}
             sources.append(target)
         target["content_hash"] = _format_hash(target.get("content_hash"), current_hash)
         target["last_ingested"] = now
@@ -354,17 +413,19 @@ def _update_source_locked(
         if not isinstance(sources, dict):
             sources = {}
         match_key: str | None = None
-        for stored_key in sources:
-            if _same_source(stored_key, source_path, vault):
-                match_key = stored_key
+        for existing_key in sources:
+            if _same_source(existing_key, source_path, vault):
+                match_key = existing_key
                 break
-        key = match_key if match_key is not None else str(source_path)
-        entry = sources.get(key) if isinstance(sources.get(key), dict) else {}
+        # A matched legacy entry keeps its existing key; only new entries use the
+        # portable form, so an in-place update never re-keys a dict by surprise.
+        manifest_key = match_key if match_key is not None else new_key
+        entry = sources.get(manifest_key) if isinstance(sources.get(manifest_key), dict) else {}
         entry["content_hash"] = _format_hash(entry.get("content_hash"), current_hash)
         entry["last_ingested"] = now
         if pages_produced is not None:
             entry["pages_produced"] = pages_produced
-        sources[key] = entry
+        sources[manifest_key] = entry
 
     manifest["sources"] = sources
     _write_manifest(vault, manifest)
