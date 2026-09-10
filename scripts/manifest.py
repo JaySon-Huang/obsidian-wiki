@@ -15,6 +15,8 @@ and still read for backward compatibility; `migrate` rewrites them.
 Usage:
   # Rewrite legacy absolute keys to the portable form, merging collisions.
   python3 scripts/manifest.py migrate <vault_path> [--dry-run]
+  # After moving a vault between machines, strip the OLD vault root:
+  python3 scripts/manifest.py migrate <vault_path> --from-root <old_vault_root>
   # Alias kept for older instructions; behaves like migrate.
   python3 scripts/manifest.py normalize <vault_path> [--dry-run]
 
@@ -113,6 +115,53 @@ def _newest(a: dict, b: dict) -> dict:
     return merged
 
 
+def _strip_old_root(path: str, roots: list[str]) -> str | None:
+    """Strip one of *roots* off *path*, returning a vault-relative path.
+
+    Used by ``migrate --from-root``: after a vault is moved between machines, its
+    absolute keys still start with the *old* vault root, which no longer matches
+    the current ``--vault``. The caller supplies that root explicitly.
+    """
+    p = Path(canonical(path))
+    for raw_root in roots:
+        root = Path(canonical(raw_root))
+        if root == Path(root.anchor):
+            continue  # refuse to strip "/" — that strips nothing meaningful
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if rel == Path("."):
+            continue
+        return rel.as_posix()
+    return None
+
+
+def _suggest_from_root(abs_keys: list[str]) -> tuple[str, int] | None:
+    """Guess a common directory prefix shared by absolute keys, for the hint line.
+
+    Clusters by leading path components, then takes the longest common directory
+    prefix of the largest cluster. A guess only — ``--from-root`` is authoritative.
+    """
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for key in abs_keys:
+        parts = Path(key).parts
+        groups.setdefault(parts[:3], []).append(key)
+    if not groups:
+        return None
+    group = max(groups.values(), key=len)
+    if len(group) < 2:
+        return None
+    dirs = [str(Path(k).parent) for k in group]
+    try:
+        common = os.path.commonpath(dirs)
+    except ValueError:
+        return None
+    if not common or common == os.sep:
+        return None
+    return common, len(group)
+
+
 def cmd_migrate(args: argparse.Namespace) -> int:
     """Rewrite legacy absolute keys to the portable key form.
 
@@ -120,25 +169,39 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     Pseudo-keys and legacy ingest-root-relative keys are preserved untouched.
     An absolute path with no portable form (outside the vault and `$HOME`) is
     kept as-is with a warning rather than dropped, so provenance is never lost.
+
+    ``--from-root`` handles the cross-machine case: a vault moved between hosts
+    has absolute keys rooted at the *old* location, so pass that old root to strip
+    it. Without a match, the keys stay absolute and the summary says so — it never
+    claims the manifest is portable while absolute keys remain.
     """
     m = load_manifest(args.vault)
     sources = m.get("sources", {})
+    old_roots = [canonical(r) for r in (getattr(args, "from_root", None) or [])]
     new_sources: dict = {}
     collisions = 0
     rekeyed = 0
     non_portable = 0
+    kept_absolute: list[str] = []
     for key, entry in sources.items():
         portable = False
         if not _is_file_key(key):
             ckey = key  # pseudo-key — opaque identity, keep verbatim
         elif os.path.isabs(key):
-            ckey = stored_key(key, args.vault)
-            if ckey is None:
-                ckey = canonical(key)
-                non_portable += 1
-                print(f"  WARN   no portable form (kept absolute): {key}")
-            else:
+            # An explicit --from-root wins over the current vault/$HOME rules, so
+            # the user's statement about the old root is authoritative.
+            ckey = _strip_old_root(key, old_roots) if old_roots else None
+            if ckey is not None:
                 portable = True
+            else:
+                ckey = stored_key(key, args.vault)
+                if ckey is not None:
+                    portable = True
+                else:
+                    ckey = canonical(key)
+                    non_portable += 1
+                    kept_absolute.append(ckey)
+                    print(f"  WARN   no portable form (kept absolute): {key}")
         elif key.startswith("~") or "$" in key:
             ckey = stored_key(os.path.expanduser(os.path.expandvars(key)), args.vault) or key
             portable = ckey != key
@@ -159,6 +222,15 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         else:
             new_sources[ckey] = entry
 
+    if kept_absolute and not old_roots:
+        suggestion = _suggest_from_root(kept_absolute)
+        if suggestion is not None:
+            prefix, count = suggestion
+            print(
+                f"  HINT   {count} absolute key(s) share the prefix {prefix}; if that "
+                f"was an older vault root, re-run with --from-root {prefix}"
+            )
+
     print(
         f"sources: {len(sources)} -> {len(new_sources)} "
         f"({rekeyed} re-keyed, {collisions} collisions merged, "
@@ -168,7 +240,10 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         print("(dry-run — no changes written)")
         return 0
     if new_sources == sources:
-        print("already portable — nothing to write")
+        if non_portable:
+            print(f"nothing portable to write — {non_portable} key(s) kept non-portable")
+        else:
+            print("already portable — nothing to write")
         return 0
     m["sources"] = new_sources
     mp = manifest_path(args.vault)
@@ -281,6 +356,13 @@ def main(argv: list[str] | None = None) -> int:
     mg = sub.add_parser("migrate", help="rewrite legacy absolute keys to the portable form")
     mg.add_argument("vault", help="path to the Obsidian vault (contains .manifest.json)")
     mg.add_argument("--dry-run", action="store_true", help="preview without writing")
+    mg.add_argument(
+        "--from-root",
+        action="append",
+        default=None,
+        metavar="OLD_VAULT_ROOT",
+        help="old vault root to strip from absolute keys (repeatable); use when the vault moved machines",
+    )
     mg.set_defaults(func=cmd_migrate)
 
     # `normalize` predates the portable-key contract; keep it as an alias so
@@ -288,6 +370,13 @@ def main(argv: list[str] | None = None) -> int:
     n = sub.add_parser("normalize", help="alias for migrate")
     n.add_argument("vault", help="path to the Obsidian vault (contains .manifest.json)")
     n.add_argument("--dry-run", action="store_true", help="preview without writing")
+    n.add_argument(
+        "--from-root",
+        action="append",
+        default=None,
+        metavar="OLD_VAULT_ROOT",
+        help="old vault root to strip from absolute keys (repeatable)",
+    )
     n.set_defaults(func=cmd_migrate)
 
     d = sub.add_parser("delta", help="list new/modified sources vs the manifest")

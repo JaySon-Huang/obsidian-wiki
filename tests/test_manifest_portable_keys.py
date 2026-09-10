@@ -167,6 +167,73 @@ class MigrateTest(unittest.TestCase):
         self.assertIn("no portable form", out)
         self.assertEqual(self._keys(), [canon])
 
+    def test_cross_machine_keys_are_kept_and_message_is_honest(self) -> None:
+        # A vault moved machines: keys are rooted at the OLD vault path, which
+        # matches neither the new vault nor $HOME. Nothing can be stripped, so
+        # every key stays absolute — and the summary must not claim otherwise.
+        old_root = self.root / "old-machine" / "oh-my-wiki"
+        keys = [str(old_root / "Clippings" / "a.md"), str(old_root / "Raw" / "b.pdf")]
+        self._write({k: {"ingested_at": "2020-01-01"} for k in keys})
+        out = self._run()
+        self.assertEqual(sorted(self._keys()), sorted(keys))
+        self.assertNotIn("already portable", out)
+        self.assertIn("2 kept non-portable", out)
+        self.assertIn("nothing portable to write", out)
+        self.assertIn("--from-root", out)  # hint tells the user how to fix it
+
+    def test_from_root_strips_the_old_vault_root(self) -> None:
+        old_root = self.root / "old-machine" / "oh-my-wiki"
+        keys = [str(old_root / "Clippings" / "a.md"), str(old_root / "Raw" / "b.pdf")]
+        self._write({k: {"ingested_at": "2020-01-01"} for k in keys})
+        out = self._run("--from-root", str(old_root))
+        self.assertEqual(sorted(self._keys()), ["Clippings/a.md", "Raw/b.pdf"])
+        self.assertIn("2 re-keyed", out)
+        self.assertIn("wrote", out)
+        self.assertIn("0 kept non-portable", out)
+
+    def test_from_root_dry_run_writes_nothing(self) -> None:
+        old_root = self.root / "old-machine" / "oh-my-wiki"
+        key = str(old_root / "Clippings" / "a.md")
+        self._write({key: {"ingested_at": "2020-01-01"}})
+        self._run("--from-root", str(old_root), "--dry-run")
+        self.assertEqual(self._keys(), [key])
+
+    def test_from_root_is_repeatable(self) -> None:
+        r1 = self.root / "machine-a" / "vault"
+        r2 = self.root / "machine-b" / "vault"
+        self._write(
+            {
+                str(r1 / "Raw" / "a.md"): {"ingested_at": "2020-01-01"},
+                str(r2 / "Raw" / "b.md"): {"ingested_at": "2020-01-01"},
+            }
+        )
+        self._run("--from-root", str(r1), "--from-root", str(r2))
+        self.assertEqual(sorted(self._keys()), ["Raw/a.md", "Raw/b.md"])
+
+    def test_from_root_leaves_foreign_absolute_keys(self) -> None:
+        old_root = self.root / "old-machine" / "oh-my-wiki"
+        foreign = self.root / "elsewhere" / "c.md"
+        self._write(
+            {
+                str(old_root / "Raw" / "a.md"): {"ingested_at": "2020-01-01"},
+                str(foreign): {"ingested_at": "2020-01-01"},
+            }
+        )
+        out = self._run("--from-root", str(old_root))
+        self.assertIn("Raw/a.md", self._keys())
+        self.assertIn(str(foreign), self._keys())
+        self.assertIn("1 kept non-portable", out)
+
+    def test_normalize_alias_accepts_from_root(self) -> None:
+        old_root = self.root / "old-machine" / "oh-my-wiki"
+        key = str(old_root / "Raw" / "a.md")
+        self._write({key: {"ingested_at": "2020-01-01"}})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = manifest.main(["normalize", str(self.vault), "--from-root", str(old_root)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self._keys(), ["Raw/a.md"])
+
     def test_dry_run_writes_nothing(self) -> None:
         (self.vault / "Raw").mkdir()
         src = self.vault / "Raw" / "x.pdf"

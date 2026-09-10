@@ -240,7 +240,18 @@ python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" migrate /path/to/vault --dry-r
 python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" migrate /path/to/vault
 ```
 
-`migrate` rewrites in-vault keys to vault-relative and `$HOME` keys to `~`-relative, merges collisions, and leaves pseudo-keys and unclassifiable paths untouched (warning on the latter). `normalize` is kept as an alias for older instructions. `python3 scripts/manifest.py delta <vault> --scan '<glob>'` lists new/modified sources, honouring `WIKI_SKIP_PROJECTS`.
+`migrate` rewrites in-vault keys to vault-relative and `$HOME` keys to `~`-relative, merges collisions, and leaves pseudo-keys and unclassifiable paths untouched (warning on the latter). `normalize` is kept as an alias for older instructions.
+
+**After moving a vault between machines**, its absolute keys are rooted at the *old* vault path, so neither the new vault root nor `$HOME` matches them and a plain `migrate` cannot strip anything. When that happens the summary says `nothing portable to write — N key(s) kept non-portable` (it never claims `already portable` while absolute keys remain) and prints a hint with the prefix the keys share. Pass that old root explicitly — repeat the flag if the vault lived at more than one location:
+
+```bash
+python3 "$OBSIDIAN_WIKI_REPO/scripts/manifest.py" migrate /path/to/vault \
+  --from-root /old/machine/path/to/vault --dry-run
+```
+
+`--from-root` takes precedence over the current-vault/`$HOME` rules for keys under it. It does not help with keys from *outside* any vault (e.g. another host's `~/.claude` or `~/.hermes` cache): those have no portable path form, so record them with an explicit key (`agent:`, `src:`) instead.
+
+`python3 scripts/manifest.py delta <vault> --scan '<glob>'` lists new/modified sources, honouring `WIKI_SKIP_PROJECTS`.
 
 ### Graph cache
 

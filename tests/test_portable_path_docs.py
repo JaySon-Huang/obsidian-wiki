@@ -92,6 +92,7 @@ def test_cli_docs_document_the_new_surface() -> None:
     assert "manifest.py" in cli and "migrate" in cli, (
         "docs/cli.md does not document scripts/manifest.py migrate"
     )
+    assert "--from-root" in cli, "docs/cli.md does not document migrate --from-root"
     for namespace in ("repo:", "url:", "agent:", "src:"):
         assert namespace in cli, f"docs/cli.md omits the {namespace!r} key namespace"
 

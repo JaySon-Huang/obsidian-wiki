@@ -169,7 +169,8 @@ resolve_key(key, vault):
 
 - vault 内绝对 key → vault-relative；
 - `$HOME` 下绝对 key → home-relative；
-- 不在 vault 内也不在 `$HOME` 下的绝对 key → 保留为绝对路径并打印 `no portable form` 警告（不删除，避免丢失 provenance）；
+- **跨机搬迁**：旧 vault 根与新 vault 根、`$HOME` 都不匹配时无法词法剥离，故提供 `--from-root <旧 vault 根>`（可重复），显式剥离旧根；未指定时对共享前缀的绝对 key 打印 `HINT` 建议该 root；
+- 不在 vault 内也不在 `$HOME` 下、且不落在任何 `--from-root` 下的绝对 key → 保留为绝对路径并打印 `no portable form` 警告（不删除，避免丢失 provenance）；仓库外源（另一台机的 `~/.hermes`、`~/.claude`）属于此类，需改用显式伪 key；
 - pseudo-key 与遗留 ingest-root 相对 key → 原样保留（后者无法在无文件的情况下与 vault-relative 区分，改写有损坏风险）；
 - 合并因归一产生的碰撞条目，`_newest()` 保留最新 `ingested_at`，并合并 `pages_created` / `pages_updated` / `pages_produced` 三个列表。`pages_produced` 是本实现补上的：原 `_newest` 只并前两个字段，迁移碰撞会静默丢掉 cache 时代的 provenance。
 
@@ -230,7 +231,7 @@ resolve_key(key, vault):
 - **解析单测**：`resolve_key` / `stored_key` 覆盖 vault 内、`$HOME` 下、pseudo-key、绝对路径四类输入，以及 `~` 与环境变量展开。
 - **匹配单测**：`_same_source` 在"旧绝对 key vs 新绝对查询"、"vault-relative key vs 绝对查询"、"home-relative key vs 绝对查询"下均命中；pseudo-key 不触发 `missing`；跨机缺失的机器本地 key 归入 `unavailable` 而非 `missing`。
 - **写入单测**：`update_source` 对 vault 内路径落盘为 vault-relative、对 `$HOME` 下路径落盘为 home-relative；对无可移植形式的源，显式 `key=` 落盘为该伪 key，未传 `key=` 时退回原路径**且 stderr 必须出现 `no portable key` 告警**；vault 内/`$HOME` 下/显式 `key=` 三种情形不得告警；`source_hint=` 会写入条目，未传时保留既有值；传入绝对路径 hint 时按 `stored_key` 同规则归一（`$HOME` 下 → `~/…`，vault 内 → vault 相对），使 shell 展开过的 hint 也不会写入机器绝对路径。由 `tests/test_portable_keys.py` 与 `tests/test_cache.py::TestCacheCLI` 覆盖。
-- **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价；写入门槛按新旧映射是否相同判定，含 `..` 的非规范绝对 key 会被规范化并落盘，且不得打印 `already portable`。
+- **迁移单测**：对混合形态的 fixture manifest 执行 `migrate --dry-run` 输出预期；执行后幂等（再跑一次 no-op）；碰撞条目按 `_newest` 合并且保留三个页面列表字段；`normalize` 别名等价；写入门槛按新旧映射是否相同判定，含 `..` 的非规范绝对 key 会被规范化并落盘，且不得打印 `already portable`。跨机场景单独覆盖：旧根绝对 key 在未指定 `--from-root` 时保持原样、摘要打印 `nothing portable to write — N key(s) kept non-portable`（不打印 `already portable`）并给出 `HINT`；指定 `--from-root`（可重复）后正确剥离为 vault 相对，落在旧根之外的绝对 key 仍保留。
 - **一致性测试**：`tests/test_manifest_portable_keys.py::ResolveStoreParityTest` 对 `cache.py` 与 `manifest.py` 两份 `resolve_key` / `stored_key` 实现跑同一组输入矩阵，断言结果一致——两份实现因 `manifest.py` 需独立运行而无法共用代码，该测试是防止单边漂移的护栏。
 - **文档契约测试**：新增 `tests/test_portable_path_docs.py`，断言 `llm-wiki` 契约段存在、相关 skill 引用契约，且非 `references/` 的 skill 文档中不出现 `"/absolute/"`、`"source_cwd":`、`source_cwd=`、`"path": "/`、`"source_path": "/`、`sources: ["/` 等存储型绝对路径字面量。`references/` 下的原始数据格式文档（如会话 `cwd` 字段）豁免。同时断言 `docs/cli.md` 记录了 `--key` 与 `manifest.py migrate`。
 - **回归**：`tests/test_cache.py`、`tests/test_cache_manifest_shapes.py`、`tests/test_manifest_delta.py` 必须继续通过；新增用例不得改变既有跳过/修改判定。
@@ -262,7 +263,7 @@ resolve_key(key, vault):
 
 另有一处测试修正：`test_update_appends_new_list_entry` 的断言由绝对路径改为 vault 相对 key `_raw/foo.md`——那条断言正是旧契约的体现。
 
-**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。另有一处文档补漏（d）：`docs/cli.md` 之前漏写第四种伪 key 命名空间 `src:<sha256-8>`，已补齐，并将文档契约测试加强为强制 `repo:`/`url:`/`agent:`/`src:` 四个命名空间同时出现在 `docs/cli.md` 与 `llm-wiki` 契约中。后续又发现（e）：文档描述了 `source_hint`，但 CLI 与库都没有写入途径；选择补齐能力而非弱化文档——新增 `source_hint=` 形参与 `cache-update --source-hint`，使该 advisory 字段可由并行路径写入，未传时保留既有值。紧接的（f）：`source_hint` 若不做归一，文档里未加引号的 `--source-hint ~/docs/x` 会被 shell 先展开成绝对路径落盘；新增 `normalize_hint`，绝对 hint 按 `stored_key` 同规则转回 `~/…` / vault 相对，并把文档示例改为加引号。再一处（g）：CLI 回执曾回显归一前的原始入参，与 manifest 实际存值不一致；`cache-update` 现改为回显 `normalize_hint` 之后的值，与同一 JSON 中 `key` 字段的归一语义对齐。
+**评审后续修复。** 代码评审又发现三处，已一并落地：（a）`migrate` 的写入门槛改为按新旧映射是否相同判定，含 `..` 的非规范绝对 key 不再出现"未写盘却报 already portable"；（b）为 `cache.py` 与 `manifest.py` 的两份 key helper 增加一致性测试 `ResolveStoreParityTest`，两侧无法共用代码（`manifest.py` 需独立运行），故以测试护栏代替抽取共享模块；（c）`check_sources` 新增 `unavailable` 桶，跨机缺失的机器本地 key 不再混入 `missing`，兑现 §5 "不误报 missing" 的承诺，`missing` 收窄为 vault 本地源的真实缺失。另有一处文档补漏（d）：`docs/cli.md` 之前漏写第四种伪 key 命名空间 `src:<sha256-8>`，已补齐，并将文档契约测试加强为强制 `repo:`/`url:`/`agent:`/`src:` 四个命名空间同时出现在 `docs/cli.md` 与 `llm-wiki` 契约中。后续又发现（e）：文档描述了 `source_hint`，但 CLI 与库都没有写入途径；选择补齐能力而非弱化文档——新增 `source_hint=` 形参与 `cache-update --source-hint`，使该 advisory 字段可由并行路径写入，未传时保留既有值。紧接的（f）：`source_hint` 若不做归一，文档里未加引号的 `--source-hint ~/docs/x` 会被 shell 先展开成绝对路径落盘；新增 `normalize_hint`，绝对 hint 按 `stored_key` 同规则转回 `~/…` / vault 相对，并把文档示例改为加引号。再一处（g）：CLI 回执曾回显归一前的原始入参，与 manifest 实际存值不一致；`cache-update` 现改为回显 `normalize_hint` 之后的值，与同一 JSON 中 `key` 字段的归一语义对齐。真实 vault 迁移试验又暴露（h）：`migrate` 只按**当前** `--vault` 根剥离，跨机搬迁后旧绝对 key 既不在新 vault 下也不在 `$HOME` 下，全部落入"不可移植保留"，却仍打印 `already portable — nothing to write`。修复：新增可重复的 `--from-root <旧 vault 根>`（优先于当前 vault/`$HOME` 规则），未指定时按最大同前缀簇打印 `HINT` 建议，并把摘要改为 `nothing portable to write — N key(s) kept non-portable`，不再用 `already portable` 掩盖残留绝对 key。仓库外源（另一台机的 agent 缓存）无法用 `--from-root` 处理，明确保留并提示改用伪 key。
 
 ---
 
