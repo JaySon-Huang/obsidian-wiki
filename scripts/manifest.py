@@ -162,6 +162,32 @@ def _suggest_from_root(abs_keys: list[str]) -> tuple[str, int] | None:
     return common, len(group)
 
 
+def _vault_top_names(vault: str) -> set[str]:
+    """Names of the vault's top-level directories (empty if unreadable)."""
+    try:
+        return {p.name for p in Path(canonical(vault)).iterdir() if p.is_dir()}
+    except OSError:
+        return set()
+
+
+def _looks_like_vault_root(candidate: str, abs_keys: list[str], vault: str) -> bool:
+    """Sanity-check a suggested root before printing a copy-pasteable command.
+
+    Stripping must leave at least one key whose first segment is a real top-level
+    directory of the current vault — otherwise the guess is too shallow (leaves
+    ``vaultX/...``) or too deep (leaves ``x.md``), and following it would write
+    plausible-looking but wrong relative keys.
+    """
+    tops = _vault_top_names(vault)
+    if not tops:
+        return False
+    for key in abs_keys:
+        rel = _strip_old_root(key, [candidate])
+        if rel is not None and rel.split("/", 1)[0] in tops:
+            return True
+    return False
+
+
 def cmd_migrate(args: argparse.Namespace) -> int:
     """Rewrite legacy absolute keys to the portable key form.
 
@@ -226,10 +252,19 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         suggestion = _suggest_from_root(kept_absolute)
         if suggestion is not None:
             prefix, count = suggestion
-            print(
-                f"  HINT   {count} absolute key(s) share the prefix {prefix}; if that "
-                f"was an older vault root, re-run with --from-root {prefix}"
-            )
+            if _looks_like_vault_root(prefix, kept_absolute, args.vault):
+                print(
+                    f"  HINT   {count} absolute key(s) share the prefix {prefix}; if that "
+                    f"was an older vault root, re-run with --from-root {prefix}"
+                )
+            else:
+                # Do not print a copy-pasteable command for an unverified guess:
+                # a too-shallow or too-deep root would write wrong relative keys.
+                print(
+                    f"  HINT   {count} absolute key(s) share the prefix {prefix}, but it does "
+                    f"not look like an old vault root (stripping it would not leave a known "
+                    f"vault directory first); pass the real one with --from-root"
+                )
 
     print(
         f"sources: {len(sources)} -> {len(new_sources)} "
