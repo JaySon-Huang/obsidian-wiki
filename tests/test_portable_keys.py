@@ -13,7 +13,7 @@ import pytest
 
 from obsidian_wiki.cache import (
     check_sources,
-    normalize_hint,
+    compute_hash,
     resolve_key,
     stored_key,
     update_source,
@@ -83,28 +83,6 @@ class TestStoredKey:
 
     def test_outside_both_is_not_portable(self, vault, tmp_path):
         assert stored_key(tmp_path / "elsewhere" / "a.md", vault) is None
-
-
-class TestNormalizeHint:
-    def test_absolute_under_home_becomes_tilde(self, vault, home):
-        assert normalize_hint(str(home / "docs" / "a.md"), vault) == "~/docs/a.md"
-
-    def test_tilde_hint_unchanged(self, vault, home):
-        assert normalize_hint("~/docs/a.md", vault) == "~/docs/a.md"
-
-    def test_absolute_under_vault_becomes_vault_relative(self, vault):
-        assert normalize_hint(str(vault / "Raw" / "x.md"), vault) == "Raw/x.md"
-
-    def test_relative_hint_kept_verbatim(self, vault):
-        assert normalize_hint("docs/x.md", vault) == "docs/x.md"
-
-    def test_non_portable_absolute_kept_verbatim(self, vault, tmp_path):
-        p = str(tmp_path / "mnt" / "x.md")  # outside vault and $HOME
-        assert normalize_hint(p, vault) == p
-
-    def test_empty_hint(self, vault):
-        assert normalize_hint(None, vault) is None
-        assert normalize_hint("", vault) == ""
 
 
 class TestWriteNormalization:
@@ -186,32 +164,6 @@ class TestWriteNormalization:
         assert "repo:github.com/o/n" in sources
         assert str(src) not in sources
 
-    def test_source_hint_recorded_with_explicit_key(self, vault, tmp_path):
-        src = tmp_path / "mnt" / "a.md"
-        src.parent.mkdir(parents=True)
-        src.write_text("body", encoding="utf-8")
-        update_source(vault, src, key="src:abcdef01", source_hint="~/docs/a.md")
-        entry = _load_raw(vault)["sources"]["src:abcdef01"]
-        assert entry["source_hint"] == "~/docs/a.md"
-
-    def test_source_hint_preserved_when_omitted(self, vault, tmp_path):
-        src = tmp_path / "mnt" / "a.md"
-        src.parent.mkdir(parents=True)
-        src.write_text("body", encoding="utf-8")
-        update_source(vault, src, key="src:abcdef01", source_hint="~/docs/a.md")
-        update_source(vault, src, key="src:abcdef01")  # no hint this time
-        entry = _load_raw(vault)["sources"]["src:abcdef01"]
-        assert entry["source_hint"] == "~/docs/a.md"
-
-    def test_shell_expanded_source_hint_is_normalized(self, vault, home, tmp_path):
-        # What the shell actually passes for an unquoted '~/docs/a.md'.
-        src = tmp_path / "mnt" / "a.md"
-        src.parent.mkdir(parents=True)
-        src.write_text("body", encoding="utf-8")
-        update_source(vault, src, key="src:abcdef01", source_hint=str(home / "docs" / "a.md"))
-        entry = _load_raw(vault)["sources"]["src:abcdef01"]
-        assert entry["source_hint"] == "~/docs/a.md"
-
 
 class TestMatchingAcrossForms:
     def test_home_relative_key_matches_absolute_query(self, vault, home):
@@ -259,3 +211,62 @@ class TestMatchingAcrossForms:
         result = check_sources(vault, [])
         assert result["missing"] == []
         assert "~/.claude/sessions/other-host.jsonl" in result["unavailable"]
+
+
+class TestVaultLocalClassification:
+    """A relative key is vault-local only if it names something the vault holds.
+
+    Path shape alone cannot separate a vault-relative key from a legacy key
+    relative to some *other* ingest root; the vault's own top-level entries do.
+    """
+
+    def _write(self, vault, entries: dict) -> None:
+        _manifest_path(vault).write_text(
+            json.dumps({"sources": entries}), encoding="utf-8"
+        )
+
+    def test_vault_relative_key_in_a_real_dir_is_missing(self, vault):
+        (vault / "Raw").mkdir()
+        self._write(vault, {"Raw/gone.md": {"content_hash": "x", "last_ingested": "2026-01-01"}})
+        result = check_sources(vault, [])
+        assert result["missing"] == ["Raw/gone.md"]
+        assert result["unavailable"] == []
+
+    def test_legacy_ingest_root_key_is_unavailable_not_missing(self, vault):
+        # "-Users-x-github/abc.jsonl" is relative to ~/.claude/projects on the
+        # machine that ingested it, not to this vault. It is not a vault loss.
+        (vault / "Raw").mkdir()
+        self._write(vault, {
+            "-Users-x-github/abc.jsonl": {"content_hash": "x", "last_ingested": "2026-01-01"}
+        })
+        result = check_sources(vault, [])
+        assert result["missing"] == []
+        assert "-Users-x-github/abc.jsonl" in result["unavailable"]
+
+    def test_out_of_vault_source_parked_in_a_foreign_namespace_is_unavailable(self, vault):
+        # Real vaults park an out-of-vault source under a made-up namespace
+        # (e.g. external/.hermes/...). The vault has no such top-level entry, so
+        # the honest report is unavailable, not a missing vault source.
+        (vault / "Raw").mkdir()
+        self._write(vault, {
+            "external/.hermes/cache/doc.md": {"content_hash": "x", "last_ingested": "2026-01-01"}
+        })
+        result = check_sources(vault, [])
+        assert result["missing"] == []
+        assert "external/.hermes/cache/doc.md" in result["unavailable"]
+
+    def test_existing_vault_relative_key_is_still_matched_as_unchanged(self, vault):
+        # The topology check must not stop a present in-vault source matching.
+        src = vault / "Raw" / "here.md"
+        src.parent.mkdir()
+        src.write_text("body", encoding="utf-8")
+        self._write(vault, {
+            "Raw/here.md": {
+                "content_hash": compute_hash(src),
+                "last_ingested": "2026-01-01",
+            }
+        })
+        result = check_sources(vault, [src])
+        assert result["unchanged"] == [str(src)]
+        assert result["missing"] == []
+        assert result["unavailable"] == []

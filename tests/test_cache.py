@@ -179,10 +179,21 @@ class TestCheckSources:
         assert str(src) in result["modified"]
 
     def test_relative_manifest_key_genuinely_missing(self, vault):
-        # A relative key with no file on disk is still reported missing.
+        # A relative key whose top-level directory really is part of this vault
+        # is a vault-local loss when the file is gone.
+        (vault / "_raw" / "articles").mkdir(parents=True)
         self._write_relative_manifest(vault, "_raw/articles/gone.md", "abc")
         result = check_sources(vault, [])
         assert "_raw/articles/gone.md" in result["missing"]
+
+    def test_relative_key_under_an_unknown_top_dir_is_unavailable(self, vault):
+        # A relative key whose first segment is not a vault entry is relative to
+        # some other root (a legacy ingest root, or an out-of-vault namespace), so
+        # it is unavailable here rather than a missing vault source.
+        self._write_relative_manifest(vault, "-Users-x/abc.jsonl", "abc")
+        result = check_sources(vault, [])
+        assert result["missing"] == []
+        assert "-Users-x/abc.jsonl" in result["unavailable"]
 
 
 # ---------------------------------------------------------------------------
@@ -282,26 +293,6 @@ class TestCacheCLI:
         assert proc.returncode == 0
         assert "no portable key" not in proc.stderr
         assert "repo:o/n" in _load_manifest(vault)
-
-    def test_cache_update_records_source_hint(self, vault, src_file):
-        proc = self._run("cache-update", str(vault), str(src_file),
-                         "--key", "src:abcdef01", "--source-hint", "~/docs/a.md")
-        assert proc.returncode == 0
-        data = json.loads(proc.stdout)
-        assert data["source_hint"] == "~/docs/a.md"
-        assert _load_manifest(vault)["src:abcdef01"]["source_hint"] == "~/docs/a.md"
-
-    def test_cache_update_normalizes_shell_expanded_source_hint(self, vault, src_file):
-        # subprocess passes argv directly, so pass what a shell would: an
-        # unquoted ~/docs/a.md arrives already expanded to an absolute path.
-        expanded = str(Path.home() / "docs" / "a.md")
-        proc = self._run("cache-update", str(vault), str(src_file),
-                         "--key", "src:beef", "--source-hint", expanded)
-        assert proc.returncode == 0
-        stored = _load_manifest(vault)["src:beef"]["source_hint"]
-        assert stored == "~/docs/a.md"
-        # The receipt must report what was stored, not the raw argv.
-        assert json.loads(proc.stdout)["source_hint"] == stored
 
 
 class TestManifestLock:

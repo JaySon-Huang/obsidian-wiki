@@ -152,25 +152,23 @@ The manifest enables:
 - **Audit** — which source produced which wiki page
 - **Staleness detection** — source changed but wiki page hasn't been updated
 
-**Source key contract (v2).** Source keys — the `sources` keys in `.manifest.json`, the `sources:` frontmatter values on pages, and project `source_cwd` — MUST be machine-portable. A vault is synced across machines, so a bare absolute path (`/Users/...`, `/home/...`) is never a valid stored key. This is the single canonical definition; other skills reference it rather than restating it.
+**Source key contract (v2).** Source keys — the `sources` keys in `.manifest.json`, the `sources:` frontmatter values on pages, and a project's `source_repo` — MUST be machine-portable. A vault is synced across machines, so a bare absolute path (`/Users/...`, `/home/...`) is never a valid stored key. This is the single canonical definition; other skills reference it rather than restating it.
 
 | Where the source lives | Canonical key form | Example |
 |---|---|---|
 | Inside the vault | **vault-relative path** — POSIX separators, no leading `./`, no `..` | `Raw/database/postgres.pdf`, `Clippings/article.md` |
 | Under `$HOME` | **home-relative path** — starts with `~` | `~/.claude/projects/-Users-name-my-app/abc.jsonl` |
-| A git project (any path) | **pseudo-key** `repo:<remote-url>` | `repo:github.com/Ar9av/obsidian-wiki` |
-| A web page | **pseudo-key** `url:<canonical-url>` | `url:https://example.com/article` |
-| An agent session | **pseudo-key** `agent:<agent>/<id>` | `agent:claude/<session-id>` |
-| Other out-of-vault file with no stable identity | **pseudo-key** `src:<sha256-8>` plus optional `source_hint` | `src:1f2a9c3d` + `source_hint: ~/docs/x.md` |
+| Not a file at all | **pseudo-key** — any `scheme:`/`://` identifier, treated as opaque | `url:https://example.com/article`, `agent:claude/<session-id>` |
 
 Rules:
 
 1. **Never store a bare absolute path.** Convert before writing, not after.
 2. **Normalize before comparing.** Expand `~` and environment variables, resolve vault-relative keys against the vault root, and treat `scheme:`/`://` pseudo-keys as opaque identifiers. Never compare raw strings without normalizing first.
-3. **`source_hint` is advisory only.** It may carry a `~`-relative location for reopening a file on this machine; set it with `obsidian-wiki cache-update --source-hint '<~/path>'` when recording the entry. The value is normalized — an absolute path under `$HOME` is stored back as `~/…` — so a shell-expanded hint still cannot introduce a machine path. It is never an identity key and must not be required for correctness.
-4. **Identity survives path changes.** The same logical source keeps the same key across machines; only `source_hint` may differ per machine.
+3. **Identity survives path changes.** The same logical source keeps the same key across machines.
+4. **Pseudo-keys are an open namespace.** What makes a key a pseudo-key is its shape (`scheme:` or `://`, so it can never be mistaken for a file path), not a fixed list of names. Recommended names: `repo:<host/owner/name>` for a git project, `url:<canonical-url>` for a web page, `agent:<agent>/<id>` for an agent session. A source that is neither in the vault nor under `$HOME` still needs one — do not let it fall back to an absolute path.
+5. **Project identity is a repository, not a checkout.** In the `projects` block, identify a project by `source_repo` (`host/owner/name`) rather than a machine path. A machine-specific checkout location, if useful at all, belongs in a separate optional hint field, never in the identity.
 
-Reading is backward compatible: an existing manifest full of absolute keys keeps working, and `scripts/manifest.py migrate <vault> --dry-run` converts it to contract v2 (merging collisions, keeping the newest `ingested_at`). **If the vault has moved between machines, pass the old root too** — `migrate <vault> --from-root <old-vault-root>` — otherwise the old absolute keys match neither the new vault nor `$HOME` and cannot be stripped; the command says `nothing portable to write` and hints at the prefix rather than claiming success. New writes go through the same normalization, so a skill may pass an absolute path to `obsidian-wiki cache-update` and still have a portable key land in the manifest. For out-of-vault sources that cannot be vault-relative or home-relative, pass an explicit pseudo-key — do not let the tool fall back to an absolute path.
+Reading is backward compatible: an existing manifest full of absolute keys keeps working, and `scripts/manifest.py migrate <vault> --dry-run` converts it to contract v2 (merging collisions, keeping the newest `ingested_at`). **If the vault has moved between machines**, its absolute keys are rooted at the *old* vault path, which matches neither the new vault nor `$HOME` — pass that old root explicitly with `migrate <vault> --from-root <old-vault-root>` (repeat the flag if the vault lived at more than one location). The command then reports `nothing portable to write — N key(s) kept non-portable` rather than claiming success. New writes go through the same normalization, so a skill may pass an absolute path to `obsidian-wiki cache-update` and still have a portable key land in the manifest.
 
 **Recording provenance.** When you write a manifest entry, populate `pages_created` and `pages_updated` with the vault-relative page paths that source contributed to. This is what makes re-ingestion (when a source changes) able to find the pages to revisit, instead of guessing.
 

@@ -8,9 +8,9 @@ deterministic and testable.
 Source keys in `.manifest.json` follow the portable key contract (see
 `.skills/llm-wiki/SKILL.md`): vault-relative for in-vault sources
 (`Raw/x.pdf`), home-relative for sources under `$HOME` (`~/.claude/...`), or a
-namespaced pseudo-key (`repo:`/`url:`/`agent:`/`src:`) for sources with no
-filesystem representation in either form. Bare machine absolute paths are legacy
-and still read for backward compatibility; `migrate` rewrites them.
+pseudo-key (`repo:`/`url:`/`agent:`) for sources with no filesystem
+representation in either form. Bare machine absolute paths are legacy and still
+read for backward compatibility; `migrate` rewrites them.
 
 Usage:
   # Rewrite legacy absolute keys to the portable form, merging collisions.
@@ -137,57 +137,6 @@ def _strip_old_root(path: str, roots: list[str]) -> str | None:
     return None
 
 
-def _suggest_from_root(abs_keys: list[str]) -> tuple[str, int] | None:
-    """Guess a common directory prefix shared by absolute keys, for the hint line.
-
-    Clusters by leading path components, then takes the longest common directory
-    prefix of the largest cluster. A guess only — ``--from-root`` is authoritative.
-    """
-    groups: dict[tuple[str, ...], list[str]] = {}
-    for key in abs_keys:
-        parts = Path(key).parts
-        groups.setdefault(parts[:3], []).append(key)
-    if not groups:
-        return None
-    group = max(groups.values(), key=len)
-    if len(group) < 2:
-        return None
-    dirs = [str(Path(k).parent) for k in group]
-    try:
-        common = os.path.commonpath(dirs)
-    except ValueError:
-        return None
-    if not common or common == os.sep:
-        return None
-    return common, len(group)
-
-
-def _vault_top_names(vault: str) -> set[str]:
-    """Names of the vault's top-level directories (empty if unreadable)."""
-    try:
-        return {p.name for p in Path(canonical(vault)).iterdir() if p.is_dir()}
-    except OSError:
-        return set()
-
-
-def _looks_like_vault_root(candidate: str, abs_keys: list[str], vault: str) -> bool:
-    """Sanity-check a suggested root before printing a copy-pasteable command.
-
-    Stripping must leave at least one key whose first segment is a real top-level
-    directory of the current vault — otherwise the guess is too shallow (leaves
-    ``vaultX/...``) or too deep (leaves ``x.md``), and following it would write
-    plausible-looking but wrong relative keys.
-    """
-    tops = _vault_top_names(vault)
-    if not tops:
-        return False
-    for key in abs_keys:
-        rel = _strip_old_root(key, [candidate])
-        if rel is not None and rel.split("/", 1)[0] in tops:
-            return True
-    return False
-
-
 def cmd_migrate(args: argparse.Namespace) -> int:
     """Rewrite legacy absolute keys to the portable key form.
 
@@ -249,22 +198,14 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             new_sources[ckey] = entry
 
     if kept_absolute and not old_roots:
-        suggestion = _suggest_from_root(kept_absolute)
-        if suggestion is not None:
-            prefix, count = suggestion
-            if _looks_like_vault_root(prefix, kept_absolute, args.vault):
-                print(
-                    f"  HINT   {count} absolute key(s) share the prefix {prefix}; if that "
-                    f"was an older vault root, re-run with --from-root {prefix}"
-                )
-            else:
-                # Do not print a copy-pasteable command for an unverified guess:
-                # a too-shallow or too-deep root would write wrong relative keys.
-                print(
-                    f"  HINT   {count} absolute key(s) share the prefix {prefix}, but it does "
-                    f"not look like an old vault root (stripping it would not leave a known "
-                    f"vault directory first); pass the real one with --from-root"
-                )
+        # No attempt to guess the old root: a wrong guess (too shallow, two
+        # sibling vaults; too deep, one subdirectory) would write plausible but
+        # wrong relative keys. The user knows where the vault used to live.
+        print(
+            f"  HINT   {len(kept_absolute)} absolute key(s) could not be made portable. If this "
+            f"vault moved machines, pass the old vault root with --from-root <old-vault-root> "
+            f"(repeatable for more than one old location)."
+        )
 
     print(
         f"sources: {len(sources)} -> {len(new_sources)} "

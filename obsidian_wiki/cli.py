@@ -1288,23 +1288,16 @@ def cmd_cache_check(args: argparse.Namespace) -> int:
 
 
 def cmd_cache_update(args: argparse.Namespace) -> int:
-    from obsidian_wiki.cache import normalize_hint, stored_key, update_source
+    from obsidian_wiki.cache import stored_key, update_source
     vault = Path(args.vault).expanduser().resolve()
     source = Path(args.source).expanduser().resolve()
     pages = args.pages or []
-    h = update_source(
-        vault, source, pages_produced=pages, key=args.key, source_hint=args.source_hint
-    )
-    out = {
+    h = update_source(vault, source, pages_produced=pages, key=args.key)
+    print(json.dumps({
         "path": str(source),
         "key": args.key or stored_key(source, vault) or str(source),
         "content_hash": h,
-    }
-    if args.source_hint is not None:
-        # Echo the value as stored, not the raw argv, so the receipt matches the
-        # manifest even when the shell expanded an unquoted ~ before we saw it.
-        out["source_hint"] = normalize_hint(args.source_hint, vault)
-    print(json.dumps(out))
+    }))
     return 0
 
 
@@ -2119,12 +2112,7 @@ def build_parser() -> argparse.ArgumentParser:
     cu.add_argument(
         "--key",
         default=None,
-        help="explicit portable key (repo:/url:/agent:/src:) for sources outside the vault and $HOME",
-    )
-    cu.add_argument(
-        "--source-hint",
-        default=None,
-        help="optional ~-relative location hint stored alongside the key (advisory, not an identity)",
+        help="explicit portable key (repo:/url:/agent:) for sources outside the vault and $HOME",
     )
     cu.set_defaults(func=cmd_cache_update)
 

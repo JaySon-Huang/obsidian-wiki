@@ -29,7 +29,7 @@ Apply `WRITING.md` preferences only to generated `_insights.md` prose; keep the 
 
 The manifest lives at `$OBSIDIAN_VAULT_PATH/.manifest.json`. It tracks every source file that has been ingested. If it doesn't exist, this is a fresh vault with nothing ingested.
 
-> **Source keys are portable — never bare absolute paths.** The canonical key is vault-relative for in-vault sources (`Raw/database/x.pdf`), `~`-relative for sources under `$HOME` (`~/.claude/projects/.../abc.jsonl`), or a namespaced pseudo-key (`repo:`/`url:`/`agent:`/`src:`) for sources with no portable path form. Never mix forms — the same file would be tracked twice and re-ingested. See `llm-wiki/SKILL.md` → `.manifest.json` (Source key contract v2). Convert a legacy absolute-key manifest with `scripts/manifest.py migrate <vault>`.
+> **Source keys are portable — never bare absolute paths.** The canonical key is vault-relative for in-vault sources (`Raw/database/x.pdf`), `~`-relative for sources under `$HOME` (`~/.claude/projects/.../abc.jsonl`), or a pseudo-key (`repo:`/`url:`/`agent:`) for sources with no portable path form. Never mix forms — the same file would be tracked twice and re-ingested. See `llm-wiki/SKILL.md` → `.manifest.json` (Source key contract v2). Convert a legacy absolute-key manifest with `scripts/manifest.py migrate <vault>`.
 
 ```json
 {

@@ -172,7 +172,6 @@ class MigrateTest(unittest.TestCase):
         # matches neither the new vault nor $HOME. Nothing can be stripped, so
         # every key stays absolute — and the summary must not claim otherwise.
         old_root = self.root / "old-machine" / "oh-my-wiki"
-        # The current vault has the same top-level dirs, so the guessed root validates.
         (self.vault / "Clippings").mkdir()
         (self.vault / "Raw").mkdir()
         keys = [str(old_root / "Clippings" / "a.md"), str(old_root / "Raw" / "b.pdf")]
@@ -182,37 +181,8 @@ class MigrateTest(unittest.TestCase):
         self.assertNotIn("already portable", out)
         self.assertIn("2 kept non-portable", out)
         self.assertIn("nothing portable to write", out)
-        self.assertIn(f"--from-root {old_root}", out)  # runnable command
-
-    def test_hint_rejects_a_too_shallow_guess(self) -> None:
-        # Common prefix above two distinct vaults: stripping it would leave
-        # vaultX/... and vaultY/... — plausible-looking but wrong.
-        (self.vault / "Raw").mkdir()
-        (self.vault / "Clippings").mkdir()
-        self._write(
-            {
-                "/srv/host/deep/vaultX/Raw/a.md": {"ingested_at": "2020-01-01"},
-                "/srv/host/deep/vaultY/Raw/b.md": {"ingested_at": "2020-01-01"},
-            }
-        )
-        out = self._run()
-        self.assertIn("does not look like", out)
-        self.assertNotIn("--from-root /srv/host/deep\n", out)
-        self.assertNotIn("re-run with --from-root /srv/host/deep", out)
-
-    def test_hint_rejects_a_too_deep_guess(self) -> None:
-        # All keys in one subdir: stripping the common parent leaves bare
-        # filenames (x.md, y.md), which are not real vault keys.
-        (self.vault / "Raw").mkdir()
-        self._write(
-            {
-                "/a/vault/Raw/x.md": {"ingested_at": "2020-01-01"},
-                "/a/vault/Raw/y.md": {"ingested_at": "2020-01-01"},
-            }
-        )
-        out = self._run()
-        self.assertIn("does not look like", out)
-        self.assertNotIn("re-run with --from-root /a/vault/Raw", out)
+        # The fix is stated, not guessed: the user supplies the old root.
+        self.assertIn("--from-root <old-vault-root>", out)
 
     def test_from_root_strips_the_old_vault_root(self) -> None:
         old_root = self.root / "old-machine" / "oh-my-wiki"

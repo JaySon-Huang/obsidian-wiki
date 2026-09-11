@@ -460,7 +460,7 @@ After writing pages, check that wikilinks work in both directions. If page A lin
 
 ### Step 7: Update Manifest and Special Files
 
-**`.manifest.json`** — For each source file ingested, add or update its entry. The **key** must be a portable source key (contract v2 in `llm-wiki/SKILL.md` → `.manifest.json`): vault-relative when the source is inside the vault (`Raw/articles/foo.pdf`), `~`-relative when under `$HOME` (`~/.claude/...`), or a namespaced pseudo-key (`repo:`/`url:`/`agent:`/`src:`) when neither applies. **Never key an entry by a machine absolute path.** The value is:
+**`.manifest.json`** — For each source file ingested, add or update its entry. The **key** must be a portable source key (contract v2 in `llm-wiki/SKILL.md` → `.manifest.json`): vault-relative when the source is inside the vault (`Raw/articles/foo.pdf`), `~`-relative when under `$HOME` (`~/.claude/...`), or a pseudo-key (`repo:`/`url:`/`agent:`) when neither applies. **Never key an entry by a machine absolute path.** The value is:
 ```json
 {
   "content_hash": "sha256:<64-char-hex>",
@@ -475,7 +475,7 @@ The page's `sources:` frontmatter uses the same key form as the manifest entry, 
 
 Also update `stats.total_sources_ingested` and `stats.total_pages`.
 
-**In parallel runs** (batch fan-out, or while the Docker server is writing the same vault), record sources with `obsidian-wiki cache-update` rather than hand-editing `.manifest.json`. That command takes an advisory lock, writes atomically, and normalises the key to the portable form; concurrent hand edits are a plain read-modify-write and silently drop whichever entry lands second. For a source with no portable path form, pass its pseudo-key explicitly: `obsidian-wiki cache-update <vault> <path> --key repo:github.com/owner/name` — and add `--source-hint ~/path/to/file` when the key does not reveal where the file lives (e.g. a `src:<sha256-8>` key).
+**In parallel runs** (batch fan-out, or while the Docker server is writing the same vault), record sources with `obsidian-wiki cache-update` rather than hand-editing `.manifest.json`. That command takes an advisory lock, writes atomically, and normalises the key to the portable form; concurrent hand edits are a plain read-modify-write and silently drop whichever entry lands second. For a source with no portable path form, pass its pseudo-key explicitly: `obsidian-wiki cache-update <vault> <path> --key repo:github.com/owner/name`.
 
 If the manifest doesn't exist yet, create it with `version: 1`.
 

@@ -237,7 +237,7 @@ def stored_key(path: Path, vault: Path) -> str | None:
     In-vault sources become vault-relative (``Raw/x.pdf``); sources under
     ``$HOME`` become home-relative (``~/.claude/...``); anything else has no
     machine-portable representation and needs an explicit pseudo-key from the
-    caller (``repo:``, ``url:``, ``agent:``, ``src:``).
+    caller (``repo:``, ``url:``, ``agent:``).
     """
     p = Path(os.path.abspath(_expand_key(str(path))))
     vault_root = Path(os.path.abspath(_expand_key(str(vault))))
@@ -251,24 +251,6 @@ def stored_key(path: Path, vault: Path) -> str | None:
             return None
         return prefix + rel.as_posix()
     return None
-
-
-def normalize_hint(hint: str | None, vault: Path) -> str | None:
-    """Normalize a ``source_hint`` to its portable spelling.
-
-    A hint is advisory and never used for identity, but it must not smuggle a
-    machine absolute path into a synced vault. An absolute (or ``~``/``$VAR``)
-    hint is run through the same rule as :func:`stored_key`: under the vault it
-    becomes vault-relative, under ``$HOME`` home-relative. This matters because a
-    shell expands an unquoted ``~/docs/x`` to ``/home/me/docs/x`` before the CLI
-    ever sees it. Relative hints and hints with no portable form are kept as-is.
-    """
-    if not hint:
-        return hint
-    if not (hint.startswith("~") or hint.startswith("$") or os.path.isabs(hint)):
-        return hint
-    portable = stored_key(Path(_expand_key(hint)), vault)
-    return portable if portable is not None else hint
 
 
 def _same_source(stored_key_value: str | None, query: Path, vault: Path) -> bool:
@@ -299,22 +281,48 @@ def _missing_on_disk(key: str | None, vault: Path) -> bool:
     return not path.exists()
 
 
-def _is_vault_local(key: str | None, vault: Path) -> bool:
-    """True if a file key resolves inside the vault.
+def _vault_top_names(vault: Path) -> set[str]:
+    """Names of the vault's top-level entries, or an empty set if unreadable."""
+    try:
+        return {p.name for p in vault.iterdir()}
+    except OSError:
+        return set()
+
+
+def _is_vault_local(key: str | None, vault: Path, top_names: set[str] | None = None) -> bool:
+    """True if a file key names a source that travels with the vault.
 
     Vault-local sources travel with the vault, so their absence is a real loss
-    (``missing``). A machine-local key (home-relative or absolute) can simply
+    (``missing``). A machine-local key (absolute or ``~``-relative) can simply
     not exist on the machine reading a synced vault, so it is reported under
-    ``unavailable`` instead of ``missing``.
+    ``unavailable`` instead.
+
+    A *relative* key resolves lexically inside the vault even when it is really
+    relative to some other root — the legacy ingest-root keys such as
+    ``-Users-x-github/abc.jsonl``. Path shape cannot tell those apart from vault
+    keys, so the vault's own topology decides: the first segment must name a real
+    top-level entry. That also gives the honest answer for an out-of-vault source
+    parked in a namespace the vault does not contain (``external/.hermes/...``):
+    unavailable, not missing. When the vault cannot be listed the lexical answer
+    stands, so an I/O hiccup never hides a real loss.
     """
     path = resolve_key(key, vault)
     if path is None:
         return False
+    raw = str(key)
     try:
-        Path(os.path.abspath(str(path))).relative_to(Path(os.path.abspath(str(vault))))
+        rel = Path(os.path.abspath(str(path))).relative_to(Path(os.path.abspath(str(vault))))
     except ValueError:
         return False
-    return True
+    if rel == Path("."):
+        return False
+    if os.path.isabs(raw) or raw.startswith("~") or "$" in raw:
+        return True
+    if top_names is None:
+        top_names = _vault_top_names(vault)
+    if not top_names:
+        return True
+    return rel.parts[0] in top_names
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
@@ -379,13 +387,14 @@ def check_sources(vault: Path, source_paths: list[Path]) -> CheckResult:
 
     # Report manifest entries whose source file no longer exists on disk and
     # that weren't among the scanned paths (in any path form).
+    top_names = _vault_top_names(vault)
     for i, (stored_key, _entry) in enumerate(entries):
         if i in matched:
             continue
         if any(_same_source(stored_key, p, vault) for p in source_paths):
             continue
         if _missing_on_disk(stored_key, vault):
-            bucket = "missing" if _is_vault_local(stored_key, vault) else "unavailable"
+            bucket = "missing" if _is_vault_local(stored_key, vault, top_names) else "unavailable"
             result[bucket].append(stored_key)
 
     return result
@@ -397,7 +406,6 @@ def update_source(
     *,
     pages_produced: list[str] | None = None,
     key: str | None = None,
-    source_hint: str | None = None,
 ) -> str:
     """Record the current hash of *source_path* in the manifest. Returns the hash.
 
@@ -413,11 +421,6 @@ def update_source(
     When neither applies, the raw path is kept for backward compatibility and a
     warning is written to stderr, because that entry is not portable across
     machines.
-
-    *source_hint* is optional advisory metadata — a ``~``-relative location for
-    reopening the source on this machine. It is never an identity key; pass it
-    alongside an explicit *key* when the key alone (e.g. ``src:<sha256-8>``) does
-    not say where the file lives. Omitted means any existing hint is preserved.
     """
     # Hash outside the lock — hashing a large source tree can take seconds and
     # nothing else in the manifest depends on it.
@@ -432,21 +435,16 @@ def update_source(
             new_key = str(source_path)
             print(
                 f"warning: {source_path} is outside the vault and $HOME, so it has no "
-                f"portable key; storing the absolute path. Pass key=<repo:|url:|agent:|src:> "
+                f"portable key; storing the absolute path. Pass key=<repo:|url:|agent:> "
                 f"to keep the vault portable across machines.",
                 file=sys.stderr,
             )
         else:
             new_key = derived
 
-    # A shell expands an unquoted "~/..." hint to an absolute path before the CLI
-    # sees it; normalize it back so no machine path lands in the manifest.
-    source_hint = normalize_hint(source_hint, vault)
-
     with manifest_lock(vault):
         return _update_source_locked(
-            vault, source_path, new_key, explicit_key, current_hash, now,
-            pages_produced, source_hint,
+            vault, source_path, new_key, explicit_key, current_hash, now, pages_produced,
         )
 
 
@@ -458,7 +456,6 @@ def _update_source_locked(
     current_hash: str,
     now: str,
     pages_produced: list[str] | None,
-    source_hint: str | None,
 ) -> str:
     """The manifest read-modify-write half of :func:`update_source`."""
     manifest = _load_raw(vault)
@@ -482,8 +479,6 @@ def _update_source_locked(
         target["last_ingested"] = now
         if pages_produced is not None:
             target["pages_produced"] = pages_produced
-        if source_hint is not None:
-            target["source_hint"] = source_hint
     else:
         if not isinstance(sources, dict):
             sources = {}
@@ -511,8 +506,6 @@ def _update_source_locked(
         entry["last_ingested"] = now
         if pages_produced is not None:
             entry["pages_produced"] = pages_produced
-        if source_hint is not None:
-            entry["source_hint"] = source_hint
         sources[manifest_key] = entry
 
     manifest["sources"] = sources
