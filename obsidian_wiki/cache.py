@@ -184,6 +184,12 @@ def _iter_entries(sources) -> Iterator[tuple[str | None, dict]]:
 # prefix that shouldn't be treated as a filesystem path.
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:[^\\/]")
 
+# A Windows drive-absolute path ("C:\dir\file", "C:/dir/file"). On POSIX this is
+# not a path at all, so it cannot be resolved and is machine-specific; lint.py
+# recognises the same shape when reporting stored keys. Kept local rather than
+# imported so the runtime cache carries no dependency on the lint module.
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
 
 def _strip_algo(value: str | None) -> str:
     """Drop an optional ``algo:`` prefix so ``sha256:<hex>`` == ``<hex>``."""
@@ -307,6 +313,10 @@ def _is_vault_local(key: str | None, vault: Path, top_names: set[str] | None = N
     parked in a namespace the vault does not contain (``external/.hermes/...``):
     unavailable, not missing. When the vault cannot be listed the lexical answer
     stands, so an I/O hiccup never hides a real loss.
+
+    A key written for another OS — a drive-letter path or one using backslashes
+    as separators — cannot be resolved on this host, so it is machine-specific
+    (``unavailable``) rather than a vault-relative key.
     """
     path = resolve_key(key, vault)
     if path is None:
@@ -318,12 +328,18 @@ def _is_vault_local(key: str | None, vault: Path, top_names: set[str] | None = N
         return False
     if rel == Path("."):
         return False
+    if os.name != "nt" and ("\\" in raw or _WINDOWS_ABS_RE.match(raw)):
+        # A key written for another OS: a backslash is not a separator here and a
+        # drive-letter path cannot be resolved, so this is machine-specific — not
+        # a vault source whose file went away.
+        return False
     if os.path.isabs(raw) or raw.startswith("~") or "$" in raw:
         return True
-    if "/" not in raw:
+    if "/" not in raw and "\\" not in raw:
         # A bare filename at the vault root. There is no leading component that
         # could be a foreign root, so this is a vault source by construction —
-        # and if it is gone, that is a real vault-local loss.
+        # and if it is gone, that is a real vault-local loss. The backslash guard
+        # keeps a Windows-form key out of this shortcut on every platform.
         return True
     if top_names is None:
         top_names = _vault_top_names(vault)

@@ -265,6 +265,24 @@ class TestVaultLocalClassification:
         assert result["missing"] == ["欢迎.md"]
         assert result["unavailable"] == []
 
+    def test_windows_form_key_is_unavailable_not_missing(self, vault):
+        # A drive-absolute path, and a legacy key that uses backslash
+        # separators, are keys written for another OS. Neither resolves here, and
+        # neither may be mistaken for a vault-root file (PK4).
+        (vault / "Raw").mkdir()
+        self._write(vault, {
+            r"C:\Users\me\wiki\Raw\a.md": {"content_hash": "x", "last_ingested": "2026-01-01"},
+            "C:/Users/me/wiki/Raw/b.md": {"content_hash": "x", "last_ingested": "2026-01-01"},
+            r"-Users-x\abc.jsonl": {"content_hash": "x", "last_ingested": "2026-01-01"},
+        })
+        result = check_sources(vault, [])
+        assert result["missing"] == []
+        assert sorted(result["unavailable"]) == sorted([
+            r"-Users-x\abc.jsonl",
+            r"C:\Users\me\wiki\Raw\a.md",
+            "C:/Users/me/wiki/Raw/b.md",
+        ])
+
     def test_existing_vault_relative_key_is_still_matched_as_unchanged(self, vault):
         # The topology check must not stop a present in-vault source matching.
         src = vault / "Raw" / "here.md"
