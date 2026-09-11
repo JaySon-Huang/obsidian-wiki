@@ -255,6 +255,16 @@ class TestVaultLocalClassification:
         assert result["missing"] == []
         assert "external/.hermes/cache/doc.md" in result["unavailable"]
 
+    def test_root_level_relative_key_is_missing(self, vault):
+        # A bare filename sits at the vault root: it has no leading component
+        # that could be a foreign root, so a deleted one is a real vault loss.
+        # (PK3: the top-name check used to sink it into unavailable.)
+        (vault / "Raw").mkdir()
+        self._write(vault, {"欢迎.md": {"content_hash": "x", "last_ingested": "2026-01-01"}})
+        result = check_sources(vault, [])
+        assert result["missing"] == ["欢迎.md"]
+        assert result["unavailable"] == []
+
     def test_existing_vault_relative_key_is_still_matched_as_unchanged(self, vault):
         # The topology check must not stop a present in-vault source matching.
         src = vault / "Raw" / "here.md"

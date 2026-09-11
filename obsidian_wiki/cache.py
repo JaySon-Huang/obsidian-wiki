@@ -293,9 +293,11 @@ def _is_vault_local(key: str | None, vault: Path, top_names: set[str] | None = N
     """True if a file key names a source that travels with the vault.
 
     Vault-local sources travel with the vault, so their absence is a real loss
-    (``missing``). A machine-local key (absolute or ``~``-relative) can simply
-    not exist on the machine reading a synced vault, so it is reported under
-    ``unavailable`` instead.
+    (``missing``). A key that is machine-specific *and* points outside this vault
+    (``/home/other/wiki/x.md``, ``~/.claude/...``) may simply not exist on the
+    machine reading a synced vault, so it is reported under ``unavailable``. An
+    absolute or ``~``-relative path that resolves *inside* this vault is still
+    vault-local — machine-specific in form, but not in target.
 
     A *relative* key resolves lexically inside the vault even when it is really
     relative to some other root — the legacy ingest-root keys such as
@@ -317,6 +319,11 @@ def _is_vault_local(key: str | None, vault: Path, top_names: set[str] | None = N
     if rel == Path("."):
         return False
     if os.path.isabs(raw) or raw.startswith("~") or "$" in raw:
+        return True
+    if "/" not in raw:
+        # A bare filename at the vault root. There is no leading component that
+        # could be a foreign root, so this is a vault source by construction —
+        # and if it is gone, that is a real vault-local loss.
         return True
     if top_names is None:
         top_names = _vault_top_names(vault)

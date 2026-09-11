@@ -918,3 +918,15 @@ def test_machine_path_in_block_style_sources_is_reported(tmp_path: Path) -> None
     assert report["findings"]["machine_path_sources"] == [
         {"page": "references/alpha.md", "sources": ["/home/other/notes/wiki/Raw/a.pdf"]}
     ]
+
+
+def test_machine_path_in_scalar_sources_is_reported(tmp_path: Path) -> None:
+    """`sources:` may be written as a scalar; that is still a stored source key."""
+    vault = tmp_path / "vault"
+    _page(vault, "references/alpha.md", sources="/abs/only.md")
+
+    report = lint_vault(vault, require_trust_ledger=False)
+
+    assert report["findings"]["machine_path_sources"] == [
+        {"page": "references/alpha.md", "sources": ["/abs/only.md"]}
+    ]

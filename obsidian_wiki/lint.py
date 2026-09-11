@@ -85,13 +85,18 @@ def _absolute_source_entries(frontmatter: str) -> list[str]:
     raw = _frontmatter_field_block(frontmatter, "sources")
     if not raw.strip():
         return []
-    stripped = raw.strip()
-    if stripped.startswith("["):
-        entries = stripped.strip("[]").split(",")
-    else:
-        entries = [
-            line.strip()[1:] for line in raw.splitlines() if line.strip().startswith("-")
-        ]
+    lines = raw.splitlines()
+    inline = lines[0].strip()
+    entries: list[str] = []
+    if inline.startswith("["):
+        entries.extend(inline.strip("[]").split(","))
+    elif inline:
+        # A scalar `sources: <value>` is a single entry — not a block list, and
+        # not a flow list, but still a stored source key.
+        entries.append(inline)
+    entries.extend(
+        line.strip()[1:] for line in lines[1:] if line.strip().startswith("-")
+    )
     bad: list[str] = []
     for entry in entries:
         value = entry.strip().strip("'\"").strip()
